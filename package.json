@@ -1,0 +1,25 @@
+{
+  "name": "outreach-app",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Email-first outbound campaign workspace: import prospects, qualify with evidence, approve exact email revisions, send manually, and run follow-up sequences.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/index.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
+    "test:pg": "TEST_DATABASE_URL=${TEST_DATABASE_URL:-postgres://postgres:devpass@127.0.0.1:54329/postgres} node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
+    "db:copy-sqlite": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning scripts/sqlite-to-postgres.mjs",
+    "check": "for f in server/*.mjs scripts/*.mjs dist/*.js; do node --check $f || exit 1; done",
+    "db:local-pg": "docker run -d --name outbound-pg -e POSTGRES_PASSWORD=devpass -p 54329:5432 postgres:17-alpine",
+    "test:browser": "BROWSER_TESTS=1 node --disable-warning=ExperimentalWarning tests/browser.test.mjs"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^1.0.0"
+  },
+  "dependencies": {
+    "nodemailer": "^10.2.1",
+    "pg": "^8.23.1"
+  }
+}

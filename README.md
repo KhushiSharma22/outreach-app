@@ -1,40 +1,201 @@
 # Outbound campaign studio
 
-A frontend-only email outreach prototype with company context, a campaign assistant, structured audience filters, lead qualification, email review, scheduling, campaign insights, and follow-up sequences.
+An email-first outbound workspace. You import prospects, qualify them against a campaign with evidence, review and approve exact email revisions, send them yourself, and run follow-up sequences timed from each recipient's own first email.
+
+This builds the backend described in `BACKEND_HANDOFF.md` and connects the existing frontend to it. These decisions were made for this first release:
+
+| Decision | Choice |
+|---|---|
+| Stack | Node.js (≥ 24), no framework. Dependencies: `pg`, `nodemailer`, and the optional Anthropic SDK. |
+| Database | **Supabase (PostgreSQL)** when `DATABASE_URL` is set; otherwise a local SQLite file. The same code and SQL run on both. |
+| Delivery | **Manual send tasks.** The server never sends email. You send from your own mailbox and confirm. |
+| Sourcing | **CSV import** from your CRM or an authorized provider (a Sales Navigator export counts as an import). AI web research is shown as unavailable. |
+| AI | **Claude** (`claude-opus-5-5`) when the SDK is installed and `ANTHROPIC_API_KEY` is set. Otherwise a deterministic, evidence-only template provider is used. |
+| Approval mode | Daily review only. Pre-approved rules mode is disabled until a policy is agreed. |
+| Sign-in | Email + password (confirmed by email) and Google. Sign-up creates a workspace; owners invite teammates. |
 
 ## Run locally
 
 ```sh
-python3 -m http.server 4173 --bind 127.0.0.1 --directory dist
+npm install
+cp .env.example .env # optional: fill in Supabase, SMTP, Google, Anthropic settings
+npm start            # http://127.0.0.1:4173
 ```
 
-Open http://127.0.0.1:4173 in your browser.
+`npm start` loads `.env` automatically. With no `DATABASE_URL`, data is kept in a local SQLite file.
 
-## Flow
+Open the URL and create an account. Without SMTP settings, the confirmation link is printed in the server console; open it to finish signing up. With SQLite, data lives in `data/outreach.db`; delete `data/` to start over.
 
-Company context → assistant or manual campaign → audience filters → discovery → lead review → email studio → approval and schedule → launch preview → insights.
+If you used an earlier version, your existing Northstar workspace is kept, but its owner (`maya@northstar.example`) has no password. Choose **Forgot password?** on the sign-in screen, enter that address, and open the reset link from the console.
 
-After launching a campaign, open **Sequences** to customize and approve day 1, 3, 5, and 7 follow-ups. Days are measured from each recipient's initial email. Edits require fresh approval.
+To try the whole flow quickly, go to **Contacts → Load fictional sample contacts**. This adds 38 fictional people with `.example` addresses and recent signal dates. Then create a campaign from Home.
 
-## Scope
+### Configuration
 
-Research, contact verification, AI writing, scheduling, delivery, and metrics are simulated. No authentication, backend, live integrations, or actual email sending. State resets on refresh. Fictional addresses use `.example`.
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT`, `HOST` | `4173`, `127.0.0.1` | Listen address. Dev sign-in refuses to bind beyond localhost. |
+| `DB_FILE` | `data/outreach.db` | SQLite database path. |
+| `AI_PROVIDER` | `auto` | `auto` (Claude if a key is set), `claude` (required), or `offline`. |
+| `ANTHROPIC_API_KEY` | — | Enables Claude. |
+| `ANTHROPIC_MODEL` | `claude-opus-5-5` | Model override. |
+| `MAX_CANDIDATES_PER_RUN` | `300` | Contacts checked per discovery batch. |
+| `MAX_AI_ASSESSMENTS_PER_RUN` | `40` | Cost cap on Claude fit assessments per batch. |
+| `SCHEDULER_INTERVAL_MS` | `30000` | How often the daily scheduler checks. |
+| `PUBLIC_URL` | `http://127.0.0.1:PORT` | Address users reach. Used in email links and the Google redirect; `https://` turns on secure cookies. Required when binding beyond localhost. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SECURE` | — | SMTP server for confirmation, reset, and invite emails (port 465 implies TLS). Required when binding beyond localhost. |
+| `MAIL_FROM` | `Outbound <no-reply@localhost>` | Sender for those emails. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | Enables “Continue with Google”. |
+| `AUTH_MODE` | `accounts` | `dev` also seeds a demo workspace and writes an API bearer token to `data/.dev-token` for scripts. |
+
+### Sign-in
+
+People can sign in with **email and password** or **Google**:
+
+- **Sign-up** creates a new workspace the person owns. They must confirm their email before the first password sign-in; the link expires in 24 hours.
+- **Teammates** are invited from **Team & account**. The invite email links to a page where they create an account or sign in, and they join the inviting workspace as a member or owner. Signing up through an invite skips email confirmation, because the invite link itself proved the address. People who belong to several workspaces can switch from the sidebar.
+- **Google** accounts are linked to an existing account with the same email, since Google has verified that address.
+- **Forgot password** sends a one-hour, single-use reset link. Completing a reset or changing a password signs out other sessions.
+
+To set up Google, create an OAuth client (type *Web application*) in Google Cloud Console → APIs & Services → Credentials. Add `PUBLIC_URL/auth/google/callback` as an authorized redirect URI, for example `http://127.0.0.1:4173/auth/google/callback`. Then set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+
+For SMTP you can use any provider: Google Workspace with an app password (`smtp.gmail.com`, port 465), Amazon SES, Postmark, SendGrid, or Mailgun. These settings are only for account emails. Outreach is still sent by you from your own mailbox.
+
+How it's protected:
+
+- Passwords are hashed with scrypt.
+- Sessions are random tokens stored hashed, in HttpOnly SameSite=Lax cookies, with a 30-day sliding expiry.
+- Sign-in, sign-up, reset, and invite requests are rate-limited.
+- Sign-up and reset responses don't reveal whether an account exists.
+- Every write, including sign-in forms, requires the app's CSRF header.
+- Google sign-in uses PKCE, state bound to a cookie, and nonce checks, and requires a verified Google email.
+
+## How it works
+
+**Company context** is versioned. Each campaign pins the version it was created with, so later edits never change approved emails silently. You can move a campaign to the latest version explicitly.
+
+**Campaign brief.** The assistant turns your request into proposed filters (roles, industries, locations, sizes, seniority, exclusions, signals) and lists anything ambiguous. Your original prompt is stored verbatim. Filters apply only once you confirm them. Campaign configuration is versioned, and stale edits return a conflict.
+
+**Discovery** runs as a durable background job over imported contacts the campaign hasn't seen before. Deterministic checks are authoritative:
+
+- Missing role, industry, size, or location data sends a contact to *review*. It never counts as a match.
+- Invalid, bounced, or suppressed emails, exclusion matches, and stale or missing signals are *excluded*.
+- Unverified or catch-all emails need review when "require verified email" is on.
+
+Claude, if configured, then assesses contextual fit. It can only make a decision stricter. Every batch is kept. A batch below 25 qualified shows a shortfall with its most common blockers rather than padding the list. Re-running never re-adds the same person.
+
+**Drafts** have immutable revisions. Each one records its generator (Claude model or template), the evidence it cites, and the context and config versions it was written with. A post-generation guard rejects AI drafts that:
+
+- mention hiring, funding, leadership, or expansion without cited evidence of that signal
+- contain unresolved placeholders
+- are missing the signature
+
+A rejected draft is replaced with a safe template and flagged for review. Research text is passed to the model as untrusted data.
+
+**Approvals** bind to an exact revision and its hash, including the recipient address. Editing, rewriting, or regenerating a draft clears its approval and cancels any queued send for it. Bulk approval names each draft revision and reports partial failures.
+
+**Launch** re-validates everything on the server and creates one send task per approved email. It is idempotent, so repeating it does nothing extra.
+
+**Send queue.** Open each email in your mail app or copy it, send it, then confirm with the actual send time. Confirmation is recorded as *user-confirmed*, never as provider-verified. Before accepting a confirmation the server rechecks:
+
+- that the approval still matches the content
+- suppression
+- campaign and sequence pause state
+- the recipient's enrollment
+- the workspace-wide sending stop
+
+**Sequences** keep a draft working copy with per-step approvals. Launching freezes an immutable version. Enrollment rules:
+
+- Recipients enroll only once their initial email is confirmed sent.
+- Each step is due on the recipient's send date plus the step's day offset, in the campaign's timezone. If that falls on a non-sending day it moves to the next sending day, and it is due at the campaign's daily time.
+- Steps that are already overdue when created, or that became overdue during a pause, are **held for review** rather than released in a burst.
+- Recording a reply, bounce, opt-out, or meeting stops remaining follow-ups, even ones already queued. Bounces and opt-outs also suppress the address across the workspace.
+- Existing enrollments keep their pinned version when you edit and relaunch. Editing pauses follow-ups until the new version is approved.
+
+**Scheduler.** Each active campaign gets at most one discovery batch per local scheduled day (enforced by a unique key). Missed days after downtime are not backfilled. New batches produce drafts that wait for your review.
+
+**Metrics** come from stored records, with stated definitions: candidates, qualified, selected, approved, queued, sent (user-confirmed), and replies, bounces, opt-outs, and meetings (recorded manually). Opens and deliveries are not tracked.
+
+**Security.** Every query is scoped to the signed-in session's workspace. Cookie-authenticated writes need a custom CSRF header. A strict CSP is set. Provider credentials stay on the server, and AI call logs record operation, model, latency, and tokens but no prompts or personal data.
+
+## API
+
+All routes are under `/api` and scoped to the signed-in workspace. Operations that create work accept an `Idempotency-Key` header. Edits, approvals, and launch take the expected `revision` and return `409` when stale. Errors look like `{ error: { code, message, fields } }`.
+
+- `GET /auth/config`, `POST /auth/{signup,login,logout,logout-all,verify-email,resend-verification,forgot-password,reset-password,change-password,invite-preview,accept-invite,switch-workspace}`
+- `GET /team`, `POST /team/invites`, `DELETE /team/invites/:id`, `DELETE /team/members/:id`
+- Browser redirects (outside `/api`): `GET /auth/google/start`, `GET /auth/google/callback`
+- `GET /session`, `GET /summary`, `GET|PATCH /account-context`
+- `POST /campaign-briefs/interpret`
+- `GET|POST /campaigns`, `GET|PATCH /campaigns/:id`, `POST /campaigns/:id/{launch,pause,resume,stop}`
+- `POST /campaigns/:id/discovery-runs`, `GET /campaigns/:id/batches`, `GET /runs/:id`
+- `GET /campaigns/:id/leads`, `POST /campaigns/:id/lead-selection`, `PATCH /campaign-leads/:id`
+- `POST /campaigns/:id/draft-runs`, `GET /campaigns/:id/drafts`, `GET|PATCH /drafts/:id`, `POST /drafts/:id/rewrites`, `POST /approvals`
+- `GET /campaigns/:id/sequence`, `PATCH /sequences/:id`, `POST /sequences/:id/{approvals,launch,pause,resume,edit}`
+- `GET /send-tasks`, `POST /send-tasks/:id/{confirm-sent,skip,release}`
+- `POST /contacts/:id/outcomes`, `GET /contacts`, `GET|POST /imports`, `GET|POST /suppressions`, `DELETE /suppressions/:id`
+- `GET /campaigns/:id/metrics`, `GET /campaigns/:id/events`, `GET /events`, `POST /workspace/sending`
 
 ## Files
 
-- `dist/index.html` — entry point
-- `dist/style.css` — responsive interface
-- `dist/model.js` — sample data and campaign rules
-- `dist/app.js` — screens and interactions
-- `tests/flow.test.cjs` — model and screen-render checks
-- `PRD.md` — original plan; predates some frontend changes
+- `server/app.mjs`: HTTP server, routing, idempotency, static files
+- `server/auth.mjs`: accounts, sessions, email verification, password reset, Google sign-in, invites
+- `server/mailer.mjs`: SMTP delivery of account emails (console fallback in development)
+- `server/db.mjs`: schema, plus PostgreSQL and SQLite drivers behind one async API (transactions follow the async call chain)
+- `scripts/sqlite-to-postgres.mjs`: one-time copy of local data into Supabase
+- `server/campaigns.mjs`: company context and campaign configuration versions
+- `server/sourcing.mjs`: CSV import, identity resolution, deterministic checks, discovery runs
+- `server/drafts.mjs`: leads, draft revisions, approvals
+- `server/delivery.mjs`: launch, send tasks, outcomes, suppression
+- `server/sequences.mjs`: sequence versions, enrollment, follow-up planning
+- `server/jobs.mjs`: durable job queue and daily scheduler
+- `server/reporting.mjs`: metrics, activity, contacts
+- `server/ai.mjs`: Claude and offline providers, draft guard
+- `server/sample.mjs`: fictional sample CSV
+- `dist/`: frontend (`index.html`, `api.js` client, `app.js`, `style.css`)
+- `tests/`: backend acceptance tests, sign-in tests (Google token endpoint mocked), SMTP test against a local fake server, Claude adapter test against a local mock, frontend integration test
+
+## Database: Supabase
+
+The app uses Supabase as a plain PostgreSQL database. Sign-in stays in this app; Supabase Auth and the Data API aren't used.
+
+1. **Create a Supabase project.** Note the database password you set.
+2. **Get the connection string.** Open **Connect** in the dashboard and copy the **Session pooler** string, which uses port 5432 and works over IPv4. Replace `[YOUR-PASSWORD]` and set it as `DATABASE_URL` in `.env`. The direct connection string also works if your host has IPv6. The transaction pooler (port 6543) works too, but session mode suits a long-running server.
+3. **Recommended: verify the server's certificate.** Download it from **Project Settings → Database → SSL configuration** and set `DATABASE_CA_CERT` to its path. Without it, the connection is still encrypted, but the server's identity isn't checked, and a warning is logged at startup.
+4. **Start the app.** On first start it creates every table in the `public` schema. Each table then gets row-level security with no policies, and Supabase's `anon` and `authenticated` roles lose access. That way the project's public API keys can't read anything; only this server, which owns the tables, can.
+5. **Optional: copy existing local data.** Stop the server, then run `npm run db:copy-sqlite -- data/outreach.db`. The copy runs in one transaction and skips rows that already exist, so it's safe to re-run.
+
+Schema creation is additive and idempotent, and an advisory lock prevents two instances from creating it at the same time. Background jobs are claimed atomically and daily batches are unique per campaign and day, so more than one app instance can share the database.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | — | Postgres connection string; unset means SQLite. |
+| `DATABASE_CA_CERT` | — | Path to the server's CA certificate for verified TLS. |
+| `DATABASE_SSL` | on, except localhost | Set to `false` to turn off TLS, e.g. for a local Postgres. |
+| `DATABASE_POOL_SIZE` | `10` | Maximum connections from this instance. |
 
 ## Checks
 
 ```sh
-node --check dist/app.js
-node --check dist/model.js
-node tests/flow.test.cjs
+npm run check
+npm test             # SQLite, in memory
+npm run db:local-pg  # once: starts Postgres 17 in Docker on port 54329
+npm run test:pg      # same suite against Postgres; each test file gets a fresh database
+npm run test:browser # sign-up, confirm, reset, and sign-in through the real forms in headless Chrome
 ```
 
-`.openai/hosting.json` records the existing private Sites registration. It contains no credentials and is not required for local use.
+Tests never use `DATABASE_URL`, so they can't touch your Supabase project. Set `DEBUG_ERRORS=1` to print server errors and job failures while tests run.
+
+## Not done yet
+
+These items from the handoff remain open:
+
+- **Multi-process rate limiting.** Sign-in rate limits are kept in memory, so they don't carry across server restarts or multiple instances.
+- **Account management.** There's no self-service account deletion, email change, or two-factor sign-in yet.
+- **Connected-mailbox sending** (OAuth, provider message IDs, reply and bounce sync). Until it exists, outcomes are recorded manually.
+- **An AI web-research or enrichment provider**, plus a live email-verification provider. Verification status currently comes from your import.
+- **Pre-approved rules mode.**
+- **Deployment.** The app runs as a single Node process with in-process background workers. Hosting and process supervision aren't set up yet.
+- **Data retention and deletion policies.**
+
+`.openai/hosting.json` refers to the old static-only hosting. The app now needs the Node server, so a static deployment of `dist/` will show a connection error.

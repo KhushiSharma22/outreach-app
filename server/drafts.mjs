@@ -1,0 +1,215 @@
+// Campaign leads, drafts with immutable revisions, and revision-bound approvals.
+import { id, now, hash } from './db.mjs';
+import { AppError, notFound, conflict, invalid, json } from './lib.mjs';
+import { runAi, offlineProvider, checkDraft } from './ai.mjs';
+import { loadCampaign } from './campaigns.mjs';
+
+// ---------- Leads ----------
+const LEAD_SELECT = `SELECT l.*, ct.first_name, ct.last_name, ct.role, ct.seniority, ct.email, ct.email_status, ct.linkedin_url, ct.location, ct.company_id,
+  co.name company, co.domain, co.industry, co.employees, co.location company_location, r.batch, s.reason suppressed,
+  d.id draft_id, d.current_revision_id,
+  (SELECT 1 FROM approvals a JOIN draft_revisions dr ON dr.id=a.revision_id WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL AND a.hash=dr.hash) approved,
+  (SELECT st.status FROM send_tasks st WHERE st.lead_id=l.id AND st.kind='initial' ORDER BY st.created_at DESC LIMIT 1) send_status
+  FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id JOIN companies co ON co.id=ct.company_id JOIN discovery_runs r ON r.id=l.run_id
+  JOIN campaigns c ON c.id=l.campaign_id LEFT JOIN suppressions s ON s.workspace_id=c.workspace_id AND s.email=ct.email LEFT JOIN drafts d ON d.lead_id=l.id`;
+export async function shapeLead(ctx, l, withEvidence = true) {
+  const ev = json(l.evidence_ids) || [];
+  return {
+    id: l.id, campaign_id: l.campaign_id, contact_id: l.contact_id, run_id: l.run_id, batch: l.batch,
+    name: `${l.first_name} ${l.last_name}`.trim(), first_name: l.first_name, role: l.role, seniority: l.seniority, email: l.email, email_status: l.email_status, linkedin_url: l.linkedin_url,
+    company: l.company, domain: l.domain, industry: l.industry, employees: l.employees, location: l.location || l.company_location,
+    decision: l.decision, score: l.score, rationale: l.rationale, checks: json(l.checks), missing: json(l.missing), confidence: l.confidence, assessed_by: l.assessed_by,
+    selected: !!l.selected, override_by: l.override_by, override_reason: l.override_reason, suppressed: l.suppressed,
+    draft_id: l.draft_id, approved: !!l.approved, send_status: l.send_status,
+    evidence: withEvidence && ev.length ? await ctx.db.all(`SELECT id, signal, fact, source_url, event_date, collected_at, provenance FROM evidence WHERE workspace_id=? AND id IN (${ev.map(() => '?').join(',')})`, [ctx.ws, ...ev]) : [],
+  };
+}
+export async function listLeads(ctx, campaignId, { run_id, decision, q, page = 0, page_size = 7, selected } = {}) {
+  await loadCampaign(ctx, campaignId);
+  const where = ['l.campaign_id=:cid', 'c.workspace_id=:ws'], p = { cid: campaignId, ws: ctx.ws };
+  if (run_id && run_id !== 'all') { where.push('l.run_id=:run'); p.run = run_id; }
+  if (decision && decision !== 'all') { where.push('l.decision=:decision'); p.decision = decision; }
+  if (selected) where.push('l.selected=1');
+  if (q) { where.push("(lower(ct.first_name||' '||ct.last_name||' '||co.name) LIKE :q)"); p.q = `%${String(q).toLowerCase()}%`; }
+  const base = `${LEAD_SELECT} WHERE ${where.join(' AND ')}`;
+  const total = (await ctx.db.get(`SELECT count(*) n FROM (${base})`, p)).n;
+  const size = Math.min(100, Math.max(1, +page_size || 7));
+  const items = await Promise.all((await ctx.db.all(`${base} ORDER BY l.selected DESC, l.score DESC, l.id LIMIT :lim OFFSET :off`, { ...p, lim: size, off: Math.max(0, +page || 0) * size })).map(async l => await shapeLead(ctx, l)));
+  const counts = Object.fromEntries((await ctx.db.all(`SELECT l.decision, count(*) n FROM campaign_leads l WHERE l.campaign_id=?${run_id && run_id !== 'all' ? ' AND l.run_id=?' : ''} GROUP BY l.decision`, run_id && run_id !== 'all' ? [campaignId, run_id] : [campaignId])).map(r => [r.decision, r.n]));
+  const selectedCount = (await ctx.db.get('SELECT count(*) n FROM campaign_leads WHERE campaign_id=? AND selected=1', [campaignId])).n;
+  return { items, total, page: +page || 0, page_size: size, counts, selected: selectedCount };
+}
+export async function getLead(ctx, leadId) {
+  const l = await ctx.db.get(`${LEAD_SELECT} WHERE l.id=? AND c.workspace_id=?`, [leadId, ctx.ws]);
+  if (!l) throw notFound('Lead');
+  return l;
+}
+export async function updateLead(ctx, leadId, body) {
+  const l = await getLead(ctx, leadId), c = await loadCampaign(ctx, l.campaign_id), t = now();
+  await ctx.db.tx(async () => {
+    if (body.decision === 'excluded') {
+      await ctx.db.run("UPDATE campaign_leads SET decision='excluded', selected=0, override_by=?, override_reason=?, updated_at=? WHERE id=?", [ctx.user?.id, String(body.reason || 'Manually excluded from this campaign.').slice(0, 300), t, l.id]);
+      await cancelLeadTasks(ctx, l.id, 'Lead excluded from campaign');
+      await ctx.db.audit(ctx.ws, c.id, 'lead.excluded', `${l.first_name} ${l.last_name} excluded`, { lead_id: l.id }, ctx.user?.id);
+    } else if (body.decision === 'qualified') {
+      if (l.decision === 'qualified') return;
+      if (l.decision !== 'review') throw conflict('not_reviewable', 'Excluded leads cannot be qualified. Hard exclusions and failed checks stay in force.');
+      const checks = json(l.checks);
+      if (checks.some(x => x.status === 'fail')) throw conflict('hard_check_failed', 'This lead failed a required check and cannot be approved.');
+      if (!l.email) throw conflict('email_missing', 'Add an email address before qualifying this lead.');
+      if (l.suppressed) throw conflict('suppressed', 'This address is suppressed.');
+      if (!String(body.reason || '').trim()) throw invalid('Explain why you are qualifying this lead.', { reason: 'Required.' });
+      await ctx.db.run("UPDATE campaign_leads SET decision='qualified', override_by=?, override_reason=?, updated_at=? WHERE id=?", [ctx.user?.id, String(body.reason).slice(0, 300), t, l.id]);
+      await ctx.db.audit(ctx.ws, c.id, 'lead.qualified_manually', `${l.first_name} ${l.last_name} qualified after review`, { lead_id: l.id, reason: body.reason }, ctx.user?.id);
+    }
+    if ('selected' in body) {
+      const cur = await ctx.db.get('SELECT decision FROM campaign_leads WHERE id=?', [l.id]);
+      if (body.selected && cur.decision !== 'qualified') throw conflict('not_qualified', 'Only qualified leads can be selected.');
+      if (!body.selected && l.send_status === 'sent') throw conflict('already_sent', 'This lead has already been emailed.');
+      await ctx.db.run('UPDATE campaign_leads SET selected=?, updated_at=? WHERE id=?', [body.selected ? 1 : 0, t, l.id]);
+      if (!body.selected) await cancelLeadTasks(ctx, l.id, 'Lead deselected');
+    }
+  });
+  return await shapeLead(ctx, await getLead(ctx, l.id));
+}
+export async function selectLeads(ctx, campaignId, { lead_ids, selected }) {
+  const c = await loadCampaign(ctx, campaignId);
+  if (!Array.isArray(lead_ids)) throw invalid('lead_ids must be a list.');
+  await ctx.db.tx(async () => {
+    for (const lid of lead_ids) {
+      const l = await ctx.db.get('SELECT * FROM campaign_leads WHERE id=? AND campaign_id=?', [lid, c.id]);
+      if (!l || (selected && l.decision !== 'qualified')) continue;
+      await ctx.db.run('UPDATE campaign_leads SET selected=?, updated_at=? WHERE id=?', [selected ? 1 : 0, now(), l.id]);
+      if (!selected) await cancelLeadTasks(ctx, l.id, 'Lead deselected');
+    }
+  });
+  return await listLeads(ctx, campaignId, { selected: true, page_size: 1 });
+}
+export async function cancelLeadTasks(ctx, leadId, reason) {
+  await ctx.db.run("UPDATE send_tasks SET status='canceled', status_reason=?, updated_at=? WHERE lead_id=? AND status IN ('pending','held')", [reason, now(), leadId]);
+}
+
+// ---------- Drafts ----------
+export async function startDraftRun(ctx, campaignId, { regenerate = false } = {}) {
+  const c = await loadCampaign(ctx, campaignId);
+  const open = await ctx.db.get("SELECT * FROM jobs WHERE workspace_id=? AND type='drafts' AND status IN ('queued','running') AND campaign_id=?", [ctx.ws, c.id]);
+  if (open && !regenerate) return open;
+  return await ctx.jobs.enqueue(ctx.ws, 'drafts', { campaign_id: c.id, regenerate: regenerate === 'all' ? 'all' : !!regenerate });
+}
+export async function executeDraftRun(ctx, { campaign_id, regenerate }) {
+  const c = await loadCampaign(ctx, campaign_id);
+  const leads = await ctx.db.all(`${LEAD_SELECT} WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified' AND c.workspace_id=?`, [c.id, ctx.ws]);
+  let made = 0, flagged = 0;
+  for (const l of leads) {
+    if (l.send_status === 'sent') continue;
+    const fresh = await ctx.db.get('SELECT d.current_revision_id, r.config_version, r.context_version_id FROM drafts d LEFT JOIN draft_revisions r ON r.id=d.current_revision_id WHERE d.lead_id=?', [l.id]);
+    if (fresh?.current_revision_id && !(regenerate && (fresh.config_version !== c.config_version || fresh.context_version_id !== c.context_version_id || regenerate === 'all'))) continue;
+    const lead = await shapeLead(ctx, l), evidence = lead.evidence;
+    let { out, provider, model } = await runAi(ctx.db, ctx.ws, 'draft', p => p.draftEmail({ context: c.context.data, config: c.config, lead, evidence }));
+    let problems = checkDraft(out, evidence, c.context.data.signature, [c.config.offer, c.context.data.proof]);
+    let note = out.review_note || null;
+    if (problems.length && provider !== 'offline') {
+      note = `AI draft failed checks (${problems.join(' ')}). A safe template was used instead.`;
+      out = await offlineProvider.draftEmail({ context: c.context.data, config: c.config, lead, evidence });
+      provider = 'offline'; model = null; problems = [];
+    }
+    if (note) flagged++;
+    await saveRevision(ctx, c, l, { subject: out.subject.trim(), body: out.body.trim(), origin: fresh?.current_revision_id ? 'regenerated' : 'generated', generator: { provider, model }, evidence_ids: (out.evidence_ids || []).filter(x => evidence.some(e => e.id === x)), review_note: note });
+    made++;
+  }
+  await ctx.db.audit(ctx.ws, c.id, 'drafts.generated', `${made} email draft${made === 1 ? '' : 's'} prepared${flagged ? `, ${flagged} flagged for review` : ''}`, { made, flagged });
+  return { made, flagged };
+}
+async function saveRevision(ctx, c, lead, { subject, body, origin, generator, evidence_ids, review_note }) {
+  return await ctx.db.tx(async () => {
+    let d = await ctx.db.get('SELECT * FROM drafts WHERE lead_id=?', [lead.id]);
+    if (!d) { d = { id: id(), campaign_id: c.id, lead_id: lead.id, current_revision_id: null, created_at: now() }; await ctx.db.insert('drafts', d); }
+    const rev = ((await ctx.db.get('SELECT max(rev) r FROM draft_revisions WHERE draft_id=?', [d.id])).r || 0) + 1;
+    const r = { id: id(), draft_id: d.id, rev, subject, body, hash: hash(subject, body, lead.email), origin, generator: JSON.stringify(generator), evidence_ids: JSON.stringify(evidence_ids), review_note, context_version_id: c.context_version_id, config_version: c.config_version, created_by: ctx.user?.id || null, created_at: now() };
+    await ctx.db.insert('draft_revisions', r);
+    await ctx.db.run('UPDATE drafts SET current_revision_id=? WHERE id=?', [r.id, d.id]);
+    const n = (await ctx.db.run("UPDATE approvals SET invalidated_at=?, invalidation_reason=? WHERE draft_id=? AND invalidated_at IS NULL", [now(), `Superseded by revision ${rev} (${origin})`, d.id])).changes;
+    await cancelLeadTasks(ctx, lead.id, `Draft changed (${origin}) after approval; re-approval required`);
+    if (n) await ctx.db.audit(ctx.ws, c.id, 'approval.invalidated', `Approval cleared for ${lead.first_name} ${lead.last_name}: ${origin}`, { draft_id: d.id }, ctx.user?.id);
+    return r;
+  });
+}
+async function shapeDraft(ctx, d) {
+  const r = await ctx.db.get('SELECT * FROM draft_revisions WHERE id=?', [d.current_revision_id]);
+  const appr = await ctx.db.get('SELECT * FROM approvals WHERE draft_id=? AND revision_id=? AND invalidated_at IS NULL AND hash=?', [d.id, r.id, r.hash]);
+  const c = await ctx.db.get('SELECT config_version, context_version_id FROM campaigns WHERE id=?', [d.campaign_id]);
+  return { id: d.id, lead_id: d.lead_id, revision_id: r.id, rev: r.rev, subject: r.subject, body: r.body, origin: r.origin, generator: json(r.generator), evidence_ids: json(r.evidence_ids), review_note: r.review_note, approved: !!appr, approved_at: appr?.created_at || null, stale: r.config_version !== c.config_version || r.context_version_id !== c.context_version_id, created_at: r.created_at };
+}
+export async function listDrafts(ctx, campaignId) {
+  await loadCampaign(ctx, campaignId);
+  const leads = await ctx.db.all(`${LEAD_SELECT} WHERE l.campaign_id=? AND l.selected=1 AND c.workspace_id=? ORDER BY l.score DESC, l.id`, [campaignId, ctx.ws]);
+  const items = await Promise.all(leads.map(async l => ({ lead: await shapeLead(ctx, l), draft: l.draft_id && l.current_revision_id ? await shapeDraft(ctx, await ctx.db.get('SELECT * FROM drafts WHERE id=?', [l.draft_id])) : null })));
+  const pending = await ctx.db.get("SELECT status, last_error FROM jobs WHERE workspace_id=? AND type='drafts' AND campaign_id=? ORDER BY created_at DESC LIMIT 1", [ctx.ws, campaignId]);
+  return { items, total: items.length, approved: items.filter(x => x.draft?.approved).length, job: pending || null };
+}
+async function loadDraft(ctx, draftId) {
+  const d = await ctx.db.get('SELECT d.* FROM drafts d JOIN campaigns c ON c.id=d.campaign_id WHERE d.id=? AND c.workspace_id=?', [draftId, ctx.ws]);
+  if (!d) throw notFound('Draft');
+  return d;
+}
+export const getDraft = async (ctx, draftId) => await shapeDraft(ctx, await loadDraft(ctx, draftId));
+async function editable(ctx, d, expected) {
+  if (d.current_revision_id !== expected) throw conflict('stale_revision', 'This draft changed since you loaded it. Reload to see the latest version.', { draft: await shapeDraft(ctx, d) });
+  if (await ctx.db.get("SELECT 1 FROM send_tasks WHERE lead_id=? AND kind='initial' AND status='sent'", [d.lead_id])) throw conflict('already_sent', 'This email was already sent and cannot be changed.');
+}
+export async function editDraft(ctx, draftId, { revision_id, subject, body }) {
+  const d = await loadDraft(ctx, draftId);
+  await editable(ctx, d, revision_id);
+  const cur = await shapeDraft(ctx, d);
+  subject = String(subject ?? cur.subject).trim(); body = String(body ?? cur.body).trim();
+  if (!subject || !body) throw invalid('Add a subject and message.', { subject: !subject ? 'Required.' : undefined, body: !body ? 'Required.' : undefined });
+  if (subject === cur.subject && body === cur.body) return cur;
+  const c = await loadCampaign(ctx, d.campaign_id), lead = await getLead(ctx, d.lead_id);
+  await saveRevision(ctx, c, lead, { subject, body, origin: 'edit', generator: { provider: 'user' }, evidence_ids: cur.evidence_ids, review_note: null });
+  return await getDraft(ctx, d.id);
+}
+export async function rewriteDraft(ctx, draftId, { revision_id, style }) {
+  if (!['human', 'short', 'direct'].includes(style)) throw invalid('Choose a rewrite style.');
+  const d = await loadDraft(ctx, draftId);
+  await editable(ctx, d, revision_id);
+  const c = await loadCampaign(ctx, d.campaign_id), l = await getLead(ctx, d.lead_id), lead = await shapeLead(ctx, l), cur = await shapeDraft(ctx, d);
+  let { out, provider, model } = await runAi(ctx.db, ctx.ws, 'rewrite', p => p.rewriteEmail({ context: c.context.data, config: c.config, lead, draft: cur, evidence: lead.evidence, style }));
+  let problems = checkDraft(out, lead.evidence, c.context.data.signature, [c.config.offer, c.context.data.proof]), note = null;
+  if (problems.length && provider !== 'offline') { note = `AI rewrite failed checks (${problems.join(' ')}). A template rewrite was used.`; out = await offlineProvider.rewriteEmail({ context: c.context.data, config: c.config, lead, draft: cur, style }); provider = 'offline'; model = null; }
+  await editable(ctx, await loadDraft(ctx, d.id), revision_id); // content may have changed while the model ran
+  await saveRevision(ctx, c, l, { subject: out.subject.trim() || cur.subject, body: out.body.trim(), origin: `rewrite:${style}`, generator: { provider, model }, evidence_ids: (out.evidence_ids || []).filter(x => lead.evidence.some(e => e.id === x)), review_note: note });
+  return await getDraft(ctx, d.id);
+}
+
+// Approves exact revisions. Each item succeeds or fails independently.
+export async function approveDrafts(ctx, { items, confirm }, onApproved) {
+  if (!Array.isArray(items) || !items.length) throw invalid('Choose the drafts to approve.');
+  if (items.length > 1 && confirm !== true) throw invalid('Confirm you reviewed these drafts.', { confirm: 'Required.' });
+  return await Promise.all(items.map(async ({ draft_id, revision_id }) => {
+    try {
+      return await ctx.db.tx(async () => {
+        const d = await loadDraft(ctx, draft_id);
+        if (d.current_revision_id !== revision_id) return { draft_id, status: 'conflict', code: 'stale_revision', message: 'The draft changed after you reviewed it. Review the latest version.', current_revision_id: d.current_revision_id };
+        const r = await ctx.db.get('SELECT * FROM draft_revisions WHERE id=?', [revision_id]);
+        const l = await getLead(ctx, d.lead_id);
+        if (!r.subject.trim() || !r.body.trim()) return { draft_id, status: 'rejected', code: 'empty', message: 'Subject and body are required.' };
+        if (l.decision !== 'qualified' || !l.selected) return { draft_id, status: 'rejected', code: 'not_selected', message: 'This lead is no longer selected.' };
+        if (!l.email || l.suppressed) return { draft_id, status: 'rejected', code: 'not_contactable', message: l.suppressed ? 'Recipient is suppressed.' : 'Recipient has no email address.' };
+        if (r.hash !== hash(r.subject, r.body, l.email)) return { draft_id, status: 'conflict', code: 'recipient_changed', message: 'The recipient address changed. Regenerate or edit the draft.' };
+        const existing = await ctx.db.get('SELECT * FROM approvals WHERE draft_id=? AND revision_id=? AND invalidated_at IS NULL', [d.id, r.id]);
+        if (!existing) {
+          await ctx.db.insert('approvals', { id: id(), draft_id: d.id, revision_id: r.id, hash: r.hash, actor: ctx.user?.id || 'system', via: items.length > 1 ? 'bulk' : 'individual', created_at: now(), invalidated_at: null, invalidation_reason: null });
+          await ctx.db.audit(ctx.ws, d.campaign_id, 'draft.approved', `Email to ${l.first_name} ${l.last_name} approved (revision ${r.rev})`, { draft_id: d.id, revision_id: r.id }, ctx.user?.id);
+        }
+        onApproved?.(d, r, l);
+        return { draft_id, status: 'approved', revision_id: r.id };
+      });
+    } catch (e) {
+      if (e instanceof AppError) return { draft_id, status: 'rejected', code: e.code, message: e.message };
+      throw e;
+    }
+  }));
+}
+export async function validApproval(ctx, draftRevisionId) {
+  return !!await ctx.db.get('SELECT 1 FROM approvals a JOIN drafts d ON d.id=a.draft_id JOIN draft_revisions r ON r.id=a.revision_id WHERE a.revision_id=? AND d.current_revision_id=a.revision_id AND a.invalidated_at IS NULL AND a.hash=r.hash', [draftRevisionId]);
+}
