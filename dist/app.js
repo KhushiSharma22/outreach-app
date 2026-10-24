@@ -1,93 +1,867 @@
-const icons={grid:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',campaign:'<path d="m3 11 18-8-8 18-3-8-7-2Z"/><path d="m10 13 5-5"/>',people:'<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5"/>',spark:'<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Zm8-2v4m-2-2h4"/>',mail:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 6 9 7 9-7"/>',linkedin:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7 10v7m0-10v.1M11 17v-7m0 3a3 3 0 0 1 6 0v4"/>',check:'<path d="m5 12 4 4L19 6"/>',clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',shield:'<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/>',arrow:'<path d="M4 12h16m-6-6 6 6-6 6"/>',chart:'<path d="M4 4v16h17M8 15l4-5 4 2 5-7"/>',settings:'<circle cx="12" cy="12" r="4"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/>'};
-const icon=(name)=>`<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${icons[name]||icons.spark}</svg>`;
-const M=window.OutboundModel;
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const iconsMore={home:'<path d="m3 10 9-7 9 7v10H3Z"/><path d="M9 20v-7h6v7"/>',search:'<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>',close:'<path d="m6 6 12 12M6 18 18 6"/>',chevron:'<path d="m9 5 7 7-7 7"/>',back:'<path d="M20 12H4m6-6-6 6 6 6"/>',copy:'<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/>',calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18"/>',pause:'<path d="M8 5v14m8-14v14"/>',plus:'<path d="M12 4v16M4 12h16"/>',download:'<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>'};Object.assign(icons,iconsMore);
-let account=M.account(),campaigns=[],view='home',activeId=null,filter='qualified',search='',page=0,leadId=null,messageLead=null,messageType='intro',modal=null,error='',chatReply=false,chatPrompt='',busy=false,insightTab='overview',shortfall=false,toastTimer;
-const demo=M.campaign(account);demo.id='demo-growth';demo.name='SaaS founders · India';demo.status='active';demo.history=true;demo.step=5;demo.leads=M.discover(demo);demo.selected=M.eligible(demo).map(l=>l.id);campaigns.push(demo);
-function current(){return campaigns.find(c=>c.id===activeId)}
-function badge(text,type=''){return `<span class="badge ${type}">${text}</span>`}
-function toast(text){const el=document.getElementById('toast');el.className='toast';el.textContent=text;el.style.display='block';clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.style.display='none',3000)}
-function navigate(next){view=next;modal=null;error='';render();window.scrollTo(0,0)}
-function openCampaign(id){activeId=id;const c=current();view=c.status==='draft'?'builder':'tracking';filter='qualified';page=0;search='';messageLead=null;insightTab='overview';render();window.scrollTo(0,0)}
-function newCampaign(prompt=''){const c=M.campaign(account,prompt);campaigns.push(c);activeId=c.id;view='builder';error='';render();window.scrollTo(0,0)}
-function shell(body){return `<div class="app"><aside class="sidebar"><div class="brand"><span class="logo">↗</span>outbound<span style="color:#c8e99b">.</span></div><div class="workspace"><span class="avatar">${esc(account.company[0]||'N')}</span><div>${esc(account.company)}<small style="display:block;color:#789583;font-size:10px">Email workspace</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav"><button class="${view==='home'?'active':''}" onclick="navigate('home')">${icon('home')}Home</button><button class="${['campaigns','builder','tracking'].includes(view)?'active':''}" onclick="navigate('campaigns')">${icon('campaign')}Campaigns <span class="count">${campaigns.length}</span></button><button class="${view==='sequences'?'active':''}" onclick="navigate('sequences')">${icon('clock')}Sequences</button><button class="${view==='leads'?'active':''}" onclick="navigate('leads')">${icon('people')}All leads</button><button class="${view==='account'?'active':''}" onclick="navigate('account')">${icon('settings')}Company context</button></nav><div class="sidebar-bottom"><div class="workspace-note"><strong>${icon('spark')} Quality over volume</strong>Every prospect should have a reason to be on your list.</div><div class="user"><span class="avatar">${esc(account.sender[0]||'M')}</span><div>${esc(account.sender)}<small>Workspace owner · preview</small></div></div></aside><main class="main"><header class="topbar"><span class="mobile-brand">↗ outbound.</span><div class="breadcrumbs">Workspace <span>/</span><strong>${({home:'Home',campaigns:'Campaigns',builder:'Campaign studio',tracking:'Campaign insights',account:'Company context',leads:'All leads',sequences:'Sequences'})[view]}</strong></div><div class="top-actions"><span class="preview-pill">Interactive preview · sample data</span><button class="small ghost" onclick="navigate('account')">${icon('mail')} ${esc(account.email)}</button><span class="avatar">${esc(account.sender[0]||'M')}</span></div></header><div class="content">${body}</div></main></div>${overlay()}`}
-function render(){document.getElementById('app').innerHTML=shell(({home:homeView,campaigns:campaignsView,builder:builderView,tracking:trackingView,account:accountView,leads:allLeadsView,sequences:sequencesView})[view]());bind();if(modal){document.querySelector('.app').inert=true;document.querySelector('.overlay input,.overlay button,.modal input,.modal button')?.focus()}}
-function homeView(){return `<div class="heading"><div><div class="eyebrow">YOUR OUTBOUND WORKSPACE</div><h1>Good morning, ${esc(account.sender)}.</h1><p>Let’s find the people who should hear from you.</p></div><button class="ghost" onclick="newCampaign()">${icon('plus')} Create manually</button></div><div class="home-grid"><div><section class="assistant-panel"><div class="assistant-title"><span class="ai-mark">${icon('spark')}</span><div><h2>Your next campaign starts with a conversation.</h2><p>Campaign assistant</p></div></div><p class="assistant-intro">Who would you like to reach,<br>and what’s your reason to connect?</p><div class="prompt-box"><textarea id="prompt" aria-label="Describe your campaign" placeholder="Find founders of recently funded SaaS companies in India. Help me introduce our outbound service…">${esc(chatPrompt)}</textarea><div class="prompt-footer"><span>${icon('shield')} Grounded in your company context</span><button class="primary" onclick="sendChat()">Build my campaign ${icon('arrow')}</button></div></div><div class="suggestions"><button onclick="usePrompt('Reach founders at B2B SaaS companies in India that recently raised funding. Introduce our outbound service.')">${icon('spark')} Recently funded founders</button><button onclick="usePrompt('Find heads of growth at SaaS companies hiring their first sales team in India.')">${icon('people')} Teams hiring in sales</button></div>${chatReply?`<div class="conversation"><div class="bubble-user">${esc(chatPrompt)}</div><div class="inline"><span class="ai-mark" style="height:28px;width:28px">${icon('spark')}</span><strong style="font-size:13px">Here’s a starting point</strong></div><p>I’ll carry your brief into the campaign, alongside ${esc(account.company)}’s offering. Next, you can confirm the audience, pick discovery signals, and review a daily batch of 25–30 prospects.</p><p class="helper">Preview response · no live AI analysis</p><button class="primary small" onclick="newCampaign(chatPrompt)">Review campaign brief ${icon('arrow')}</button></div>`:''}</section><div class="stat-strip">${stat('Active campaigns',campaigns.filter(c=>c.status==='active').length,'Across your workspace','campaign')}${stat('Ready for review',26,'Sample batch · today','people')}${stat('Qualified replies',12,'Example results · last 7 days','mail')}</div></div><aside class="home-context"><div class="panel"><div class="panel-header"><h2 style="font-size:14px">Your company context</h2><button class="icon-btn ghost" aria-label="Edit company context" onclick="navigate('account')">${icon('settings')}</button></div><div class="context-list"><div><span>COMPANY</span><p>${esc(account.company)}</p></div><div><span>WHAT YOU DO</span><p>${esc(account.offering)}</p></div><div><span>IDEAL CUSTOMER</span><p>${esc(account.icp)}</p></div><div><span>YOUR VOICE</span><p>${esc(account.tone)}, clear, and relevant</p></div></div><div class="context-foot"><div class="inline">${icon('check')}<span style="font-size:11px">Used to qualify leads and write emails</span></div></div></div><div class="note">${icon('shield')}<span>This is a frontend preview. Research, email verification, AI writing, and delivery are simulated.</span></div></aside></div><section class="panel"><div class="panel-header"><div><h2>Your campaigns</h2><p>A clear view of what’s running and what needs you.</p></div><button class="small ghost" onclick="navigate('campaigns')">View all ${icon('arrow')}</button></div>${campaigns.slice().reverse().slice(0,3).map(c=>campaignRow(c)).join('')}</section>`}
-function stat(label,value,note,i){return `<div class="stat-card"><div class="stat-top">${label}${icon(i)}</div><strong>${value}</strong><small>${note}</small></div>`}
-function campaignRow(c){return `<div class="campaign-row"><span class="campaign-icon">${icon('campaign')}</span><div class="grow"><h3>${esc(c.name)}</h3><p>${c.status==='draft'?'Draft · '+flowSteps[c.step]:`${c.target} leads/day · ${c.time} · ${c.approval==='daily'?'Daily review':'Pre-approved rules'}`}</p></div>${badge(c.status==='active'?'Active':c.status==='paused'?'Paused':'Draft',c.status==='active'?'green':'')}<div class="compact-metrics"><span><strong>${c.history?182:M.selected(c).length}</strong>leads</span><span><strong>${c.history?12:0}</strong>replies</span></div><button class="small ghost" onclick="openCampaign('${c.id}')">${c.status==='draft'?'Continue':'View campaign'} ${icon('chevron')}</button></div>`}
-function usePrompt(s){chatPrompt=s;document.getElementById('prompt').value=s;document.getElementById('prompt').focus()}
-function sendChat(){chatPrompt=document.getElementById('prompt').value.trim();if(!chatPrompt){toast('Describe the audience or campaign you have in mind.');return}chatReply=true;render()}
-const flowSteps=['Campaign brief','Lead discovery','Review leads','Email studio','Schedule','Launch'];
-function campaignsView(){return `<div class="heading"><div><div class="eyebrow">CAMPAIGNS</div><h1>A little structure. Better conversations.</h1><p>Manage your discovery, outreach, and follow-up in one place.</p></div><button class="primary" onclick="newCampaign()">${icon('plus')} New campaign</button></div><div class="panel">${campaigns.slice().reverse().map(c=>campaignRow(c)).join('')}</div>`}
-function builderView(){return `<div class="heading"><div><h1>${esc(current().name)}</h1><p>Turn the right signals into relevant conversations.</p></div>${badge('Draft campaign','outline')}</div><div class="panel"><h2>Campaign brief</h2><p class="muted">Your campaign setup is being prepared.</p></div>`}
-function trackingView(){return campaignsView()}function accountView(){return homeView()}function allLeadsView(){return campaignsView()}function overlay(){return ''}function bind(){}
-render();
-function builderView(){const c=current();return `<button class="back-link" onclick="navigate('campaigns')">← All campaigns</button><div class="heading"><div><div class="eyebrow">CAMPAIGN STUDIO</div><h1>${esc(c.name)}</h1><p>Find the right people. Give them a reason to reply.</p></div>${badge('Email campaign','green')}</div><div class="step-nav">${flowSteps.map((s,i)=>`<button class="${c.step===i?'active':i<c.step?'done':''}" onclick="goStep(${i})" ${i>c.step?'disabled':''}><span class="step-num">${i<c.step?'✓':i+1}</span><span class="step-label">${s}</span></button>`).join('')}</div><div class="${c.step===2||c.step===3?'':'wizard-grid'}"><div>${[briefView,discoveryView,reviewView,studioView,scheduleView,launchView][c.step](c)}${error?`<div class="error" role="alert">${esc(error)}</div>`:''}</div>${c.step===2||c.step===3?'':summaryView(c)}</div><div class="footer-actions"><span class="helper">${icon('shield')} Frontend preview. No real emails.</span><div class="inline">${c.step?'<button onclick="goStep(current().step-1)">Back</button>':''}<button class="primary" onclick="continueFlow()">${['Configure discovery','Preview leads','Create emails','Set schedule','Review campaign','Launch preview'][c.step]} ${icon('arrow')}</button></div></div>`}
-function goStep(n){current().step=n;error='';render();window.scrollTo(0,0)}
-function continueFlow(){const c=current();error='';if(c.step===0&&c.filters)syncAudience(c);if(c.step===0&&(!c.name.trim()||!c.audience.trim()||!c.offer.trim()))error='Complete the campaign name, audience, and offering.';if(c.step===1&&!c.signals.length)error='Select at least one signal.';if(c.step===2&&!M.selected(c).length)error='Discover and select qualified leads first.';if(c.step===3&&M.draftList(c,account).some(x=>!x.draft.approved))error='Approve the emails individually or review and approve all.';if(c.step===4&&(!c.days.length||!c.time))error='Choose at least one day and a discovery time.';if(c.step===5){const blockers=M.blockers(c,account);if(blockers.length)error=blockers.join(' ');else if(!document.getElementById('launch-check').checked)error='Confirm that this is a simulated campaign.';else{c.status='active';c.events.unshift({text:'Campaign launched in preview',detail:'Approved emails queued. Nothing was sent.',time:'Just now'});view='tracking';insightTab='overview';render();window.scrollTo(0,0);toast('Your campaign is live in preview.');return}}if(error){render();return}goStep(c.step+1)}
-function summaryView(c){return `<aside class="wizard-aside"><div class="panel"><h2 style="font-size:14px">Campaign at a glance</h2>${[['Workspace',account.company],['Context',c.contextOrigin],['Lead source',c.source==='research'?'AI research':'Sales Navigator + email enrichment'],['Daily goal',`${c.target} leads · 25–30 range`],['Quality threshold',`${c.quality}/100 minimum fit`],['Sending account',account.email]].map(([k,v])=>`<div class="summary-row"><small>${k}</small><p>${esc(v)}</p></div>`).join('')}</div><div class="note">${icon('spark')}<span>Strong fit comes first. If fewer than 25 leads qualify, we’ll show the shortfall instead of lowering the bar.</span></div></aside>`}
-function field(label,key,value,textarea=false){return `<div class="field"><label for="f-${key}">${label}</label>${textarea?`<textarea id="f-${key}" data-cfield="${key}">${esc(value)}</textarea>`:`<input id="f-${key}" data-cfield="${key}" value="${esc(value)}">`}</div>`}
-function briefView(c){return `<div class="panel"><div class="panel-header"><div><h2>Start with a clear brief</h2><p>This context guides lead qualification and every email.</p></div>${icon('campaign')}</div><div class="context-banner">${icon('spark')}<div><strong>${esc(c.contextOrigin)}</strong><p>${c.prompt?'Your exact assistant brief is preserved below. Edit it before continuing.':'Using the audience and offering from your company account.'}</p></div></div>${field('Campaign name','name',c.name)}${field('Who do you want to reach?','audience',c.audience,true)}${field('What are you offering?','offer',c.offer,true)}${field('Who should we exclude?','exclusions',c.exclusions,true)}</div>`}
-function discoveryView(c){return `<div class="stack"><section class="panel"><div class="panel-header"><div><h2>Build your discovery engine</h2><p>Choose where prospects come from and why they belong.</p></div>${icon('people')}</div><label>Prospect source</label><div class="choice-grid"><button class="choice ${c.source==='research'?'active':''}" onclick="setSource('research')"><span class="title">${icon('spark')} AI research</span><p>Discover companies, decision-makers, and relevant public signals.</p>${badge('Sample research','green')}</button><button class="choice ${c.source==='salesnav'?'active':''}" onclick="setSource('salesnav')"><span class="title">${icon('linkedin')} Sales Navigator</span><p>Start with prospects you identify, then enrich contact details separately.</p>${badge('Subscription source · simulated')}</button></div>${c.source==='salesnav'?`<div class="spacer"></div>${field('Saved search or list reference (optional)','sourceRef',c.sourceRef)}<div class="notice">${icon('shield')}A Sales Navigator reference does not import profiles or supply verified emails in this preview.</div>`:''}<div class="source-flow"><span>Find prospects</span>${icon('arrow')}<span>Find contact details</span>${icon('arrow')}<span>Verify & qualify</span>${icon('arrow')}<span>Your review</span></div></section><section class="panel"><div class="panel-header"><div><h2>Reach out for a reason</h2><p>Prospects must match the audience and at least one signal.</p></div></div><div class="signals">${['Hiring','Funding','New leadership','Expansion'].map(s=>`<button class="${c.signals.includes(s)?'selected':''}" onclick="toggleSignal('${s}')">${c.signals.includes(s)?'✓':'+'} ${s}</button>`).join('')}</div><div class="two-col" style="margin-top:24px"><div class="field"><label for="freshness">Signal recency</label><select id="freshness" data-cfield="freshness">${[7,30,90].map(n=>`<option value="${n}" ${+c.freshness===n?'selected':''}>Last ${n} days</option>`).join('')}</select></div><div class="field"><label for="target">Daily lead target</label><input id="target" type="number" min="25" max="30" data-cfield="target" value="${c.target}"><p class="helper">Minimum goal 25 · maximum 30 per day.</p></div></div><label for="quality">Minimum fit score <strong id="quality-value">${c.quality}/100</strong></label><input id="quality" type="range" min="70" max="95" step="5" data-cfield="quality" value="${c.quality}"><div class="rule-row">${icon('check')}<div><strong>Company and role match</strong><p>Each prospect needs evidence of fit with your campaign context.</p></div></div><div class="rule-row">${icon('check')}<div><strong>Usable, verified email</strong><p>Missing or uncertain addresses stay out of the ready-to-send batch.</p></div></div><div class="rule-row">${icon('check')}<div><strong>Deduplicated and relevant</strong><p>Exclude customers, competitors, opt-outs, and active conversations.</p></div></div></section></div>`}
-function setSource(v){const c=current();c.source=v;c.leads=[];c.selected=[];M.invalidate(c);render()}
-function toggleSignal(s){const c=current();c.signals=c.signals.includes(s)?c.signals.filter(x=>x!==s):[...c.signals,s];c.leads=[];c.selected=[];M.invalidate(c);render()}
-function discoverBatch(low=false){if(busy)return;busy=true;shortfall=low;render();setTimeout(()=>{const c=current();c.leads=M.discover(c,low);c.selected=M.eligible(c).slice(0,c.target).map(l=>l.id);M.invalidate(c);c.batchSent=false;busy=false;filter='qualified';page=0;c.events.unshift({text:'Sample discovery completed',detail:`${M.eligible(c).length} qualified prospects from ${c.leads.length} candidates.`,time:'Just now'});render()},650)}
-function reviewView(c){if(busy||!c.leads.length)return `<div class="panel empty"><div class="ai-mark">${icon('spark')}</div><h3>${busy?'Checking fit, context, and contact details…':'Let’s find your first daily batch'}</h3><p>Explore fictional prospects to experience daily discovery. Your audience and source settings are saved, but no live search runs in this preview.</p>${busy?'<div class="progress-track"></div>':`<button class="primary" onclick="discoverBatch()">${icon('spark')} Preview discovery</button>`}</div>`;const qualified=M.eligible(c).length;return `<div class="discovery-hero"><div class="discovery-count">${qualified}<small> / ${c.target}</small></div><div class="grow"><h3>${qualified>=25?'Quality-checked prospects, ready for you.':'Quality first. Today’s batch is below target.'}</h3><p>${c.leads.length} candidates checked · batch ${c.batch} · all results are fictional examples</p></div><button class="small ghost" onclick="discoverBatch(!shortfall)">${shortfall?'Standard batch':'Preview a shortfall'}</button></div>${qualified<c.target?`<div class="notice ${qualified<25?'amber':''}" style="margin-bottom:20px">${icon('shield')}${qualified} leads meet your quality rules. ${c.target-qualified} fewer than your target. Review this smaller batch or refine your audience; we won’t add weak matches.</div>`:''}<div class="panel"><div class="tabs">${[['qualified','Qualified',qualified],['review','Needs review',c.leads.filter(l=>l.status==='review').length],['excluded','Excluded',c.leads.filter(l=>l.status==='excluded').length]].map(([k,n,v])=>`<button class="${filter===k?'active':''}" onclick="filter='${k}';page=0;render()">${n} ${badge(v)}</button>`).join('')}</div><div class="toolbar"><div class="search">${icon('search')}<input id="lead-search" aria-label="Search prospects" placeholder="Search people or companies" value="${esc(search)}" oninput="search=this.value;page=0;refreshTable()"></div><span class="subtle">${M.selected(c).length} selected for email drafts</span><button class="small" onclick="selectAllLeads()">${M.selected(c).length===Math.min(M.eligible(c).length,c.target)?'Clear selection':'Select qualified'}</button></div><div id="lead-results">${leadTable(c)}</div><p class="helper">Fit scores, research evidence, and email verification are simulated. Click a prospect to inspect the qualification details.</p></div>`}
-function filteredLeads(c){return c.leads.filter(l=>(filter==='all'||l.status===filter)&&(!search||(l.name+' '+l.company).toLowerCase().includes(search.toLowerCase())))}
-function leadTable(c){const list=filteredLeads(c),slice=list.slice(page*7,page*7+7);return `<div class="table-wrap"><table><thead><tr><th></th><th>Prospect</th><th>Company</th><th>Top signal</th><th>Fit</th><th>Email</th><th></th></tr></thead><tbody>${slice.map(l=>`<tr><td><input type="checkbox" aria-label="Select ${esc(l.name)}" onchange="toggleLead('${l.id}')" ${c.selected.includes(l.id)?'checked':''} ${l.status!=='qualified'?'disabled':''}></td><td><div class="person"><span class="avatar">${l.initials}</span><div><strong>${esc(l.name)}</strong><small>${l.role}</small></div></div></td><td>${l.company}<small>B2B SaaS · sample</small></td><td>${badge(l.signal)}</td><td><span class="score-ring">${l.score}</span></td><td>${badge(l.email?'Sample verified':'Missing',l.email?'green':'amber')}</td><td><button class="icon-btn ghost" aria-label="Inspect ${esc(l.name)}" onclick="leadId='${l.id}';modal='lead';render()">${icon('chevron')}</button></td></tr>`).join('')||'<tr><td colspan="7">No prospects match this view.</td></tr>'}</tbody></table></div><div class="table-bottom"><span>${list.length?`${page*7+1}–${Math.min(page*7+7,list.length)} of ${list.length} prospects`:'No prospects'}</span><div class="inline"><button class="small ghost" ${page===0?'disabled':''} onclick="page--;render()">← Previous</button><button class="small ghost" ${(page+1)*7>=list.length?'disabled':''} onclick="page++;render()">Next →</button></div></div>`}
-function refreshTable(){document.getElementById('lead-results').innerHTML=leadTable(current())}
-function toggleLead(id){const c=current();c.selected=c.selected.includes(id)?c.selected.filter(x=>x!==id):[...c.selected,id];render()}
-function selectAllLeads(){const c=current();c.selected=c.selected.length===Math.min(M.eligible(c).length,c.target)?[]:M.eligible(c).slice(0,c.target).map(l=>l.id);render()}
-function studioView(c){const leads=M.selected(c);if(!leads.length)return '<div class="panel empty"><h3>No qualified leads selected</h3><p>Go back to lead review to select prospects.</p></div>';let l=leads.find(x=>x.id===messageLead)||leads[0];messageLead=l.id;const d=M.draft(c,l,messageType,account);const total=M.draftList(c,account).length,approved=M.approved(c,account);return `<div class="panel" style="margin-bottom:20px"><div class="panel-header"><div><h2>Emails that sound like you</h2><p>Grounded in each lead’s signal and your company’s context. Sample writing only.</p></div><button class="primary small" onclick="modal='bulk';render()">Review & approve all</button></div><div class="three-col">${[['Tone','tone',['Conversational','Professional','Warm']],['Length','length',['Balanced','Concise']],['Personalization angle','angle',['Signal-led','Company-led']]].map(([label,key,opts])=>`<div><label for="opt-${key}">${label}</label><select id="opt-${key}" onchange="changeWriting('${key}',this.value)">${opts.map(o=>`<option ${c[key]===o?'selected':''}>${o}</option>`).join('')}</select></div>`).join('')}</div><div class="approval-progress"><span style="width:${approved/total*100}%"></span></div><span class="helper" id="approved-count">${approved} of ${total} drafts approved · edits require fresh approval</span></div><div class="editor-layout"><aside class="recipient-list"><div class="list-label">${leads.length} RECIPIENTS</div>${leads.slice(0,8).map(x=>`<button class="${x.id===l.id?'active':''}" onclick="messageLead='${x.id}';render()"><span class="avatar">${x.initials}</span><span class="grow"><strong>${x.name}</strong><small>${x.company}</small></span>${M.variants(c).every(v=>M.draft(c,x,v,account).approved)?icon('check'):''}</button>`).join('')}${leads.length>8?`<div style="padding:15px"><label for="other-lead">All ${leads.length} recipients</label><select id="other-lead" onchange="messageLead=this.value;render()">${leads.map(x=>`<option value="${x.id}" ${x.id===l.id?'selected':''}>${x.name}</option>`).join('')}</select></div>`:''}</aside><section class="editor-main"><div class="tabs">${M.variants(c).map(v=>`<button class="${messageType===v?'active':''}" onclick="messageType='${v}';render()">${v==='intro'?'Initial email':`Follow-up · +${c.delay} days`} ${M.draft(c,l,v,account).approved?'✓':''}</button>`).join('')}</div><div class="email-meta"><span>To</span>${esc(l.name)} &lt;${esc(l.email)}&gt;</div><div class="email-meta"><span>From</span>${esc(account.sender)} &lt;${esc(account.email)}&gt;</div><div class="email-meta"><label for="email-subject" style="margin:0;color:var(--muted);min-width:38px">Subject</label><input id="email-subject" value="${esc(d.subject)}" data-draft="subject"></div><textarea class="email-body" id="email-body" aria-label="Personalized email body" data-draft="body">${esc(d.body)}</textarea><div class="evidence-box"><strong>${icon('spark')} Why this email is relevant</strong>${esc(l.fact)}<br>Matches: ${esc(l.role)} · ${esc(l.signal)} · ${l.score}/100 fit. Fictional evidence.</div><div class="rewrite-bar"><span class="helper" style="margin:0 3px 0 0">Refine with AI</span><button onclick="rewrite('human')">${icon('spark')} More natural</button><button onclick="rewrite('short')">Shorter</button><button onclick="rewrite('direct')">More direct</button></div><div class="email-footer"><span class="helper">Editable sample · no live LLM connected</span><button id="approve-one" class="${d.approved?'ghost':'primary'} small" onclick="approveOne()">${d.approved?'✓ Approved':'Approve email'}</button></div></section></div>`}
-function changeWriting(k,v){current()[k]=v;M.invalidate(current());render();toast('Sample drafts updated. Review and approve the new wording.')}
-function activeDraft(){const c=current(),l=M.selected(c).find(l=>l.id===messageLead)||M.selected(c)[0];return {c,l,d:M.draft(c,l,messageType,account)}}
-function rewrite(style){const {c,l,d}=activeDraft();const first=l.name.split(' ')[0];d.body=style==='short'?`Hi ${first},\n\n${c.offer}\n\nWorth a quick chat for ${l.company}?\n\n${account.signature}`:style==='human'?`Hi ${first},\n\nI came across ${l.company} and thought there might be a useful conversation here.\n\n${c.offer}\n\nDoes that sound relevant to what you’re working on? No worries if the timing’s off.\n\n${account.signature}`:`Hello ${first},\n\n${c.offer}\n\n${l.fact}\n\nWould you have 15 minutes next week to explore whether we could help?\n\n${account.signature}`;d.approved=false;render();toast('Sample rewrite ready for review.')}
-function approveOne(){const {d}=activeDraft();if(!d.subject.trim()||!d.body.trim()){toast('Add a subject and message first.');return}d.approved=true;render();toast('Email approved.')}
-function approveAll(){if(!document.getElementById('bulk-check').checked){toast('Confirm you reviewed the drafts.');return}const drafts=M.draftList(current(),account);if(drafts.some(x=>!x.draft.subject.trim()||!x.draft.body.trim())){toast('Fill all empty subjects or messages first.');return}drafts.forEach(x=>x.draft.approved=true);modal=null;render();toast(`${drafts.length} sample emails approved.`)}
-function scheduleView(c){return `<div class="stack"><section class="panel"><div class="panel-header"><div><h2>A daily rhythm that works for you</h2><p>Set when discovery runs and how new emails get approved.</p></div>${icon('calendar')}</div><div class="field"><label>Run discovery on</label><div class="day-picker">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<button class="${c.days.includes(d)?'selected':''}" onclick="toggleDay('${d}')">${d}</button>`).join('')}</div></div><div class="two-col"><div class="field"><label for="run-time">Discovery time</label><input id="run-time" type="time" data-cfield="time" value="${c.time}"></div><div class="field"><label for="timezone">Timezone</label><select id="timezone" data-cfield="timezone">${['Asia/Kolkata','Asia/Dubai','Europe/London','America/New_York'].map(z=>`<option ${c.timezone===z?'selected':''}>${z}</option>`).join('')}</select></div></div><label>Approval for future daily batches</label>${[['daily','Review every daily batch','You review and approve new emails before they enter the sending queue.'],['rules','Use approved writing settings','Future drafts would be approved using these settings. In this frontend preview, no delivery occurs.']].map(([v,t,d])=>`<div class="schedule-card ${c.approval===v?'active':''}"><label><input type="radio" name="approval" ${c.approval===v?'checked':''} onchange="current().approval='${v}';render()">${t} ${v==='daily'?badge('Recommended','green'):''}</label><p>${d}</p></div>`).join('')}<div class="notice">${icon('shield')}Scheduling here is a preview of future behavior. It does not create a background job or connect to a mailbox.</div></section><section class="panel"><h2>Follow-ups have their own workspace</h2><p class="subtle">Launch your initial campaign first. Then open Sequences to draft, personalize, approve, and schedule a series of follow-up emails.</p><div class="timeline"><div class="timeline-item"><span class="time-dot">1</span><div><strong>${c.time} · Find and qualify</strong><p>Discover up to ${c.target} high-fit prospects.</p></div></div><div class="timeline-item"><span class="time-dot">2</span><div><strong>Write personalized emails</strong><p>Use your company context and each prospect’s signal.</p></div></div><div class="timeline-item"><span class="time-dot">3</span><div><strong>${c.approval==='daily'?'Wait for your approval':'Apply approved writing settings'}</strong><p>Approved messages enter the campaign queue.</p></div></div></div></section></div>`}
-function toggleDay(d){const c=current();c.days=c.days.includes(d)?c.days.filter(x=>x!==d):[...c.days,d];render()}
-function launchView(c){return `<div class="launch-hero"><span class="ai-mark">${icon('campaign')}</span><div><h2>Ready for your first conversation.</h2><p>Here’s exactly what you’re launching.</p></div></div><section class="panel"><div class="review-grid">${[['Audience',c.audience],['Source',c.source==='research'?'AI research':'Sales Navigator + separate email enrichment'],['First batch',M.selected(c).length+' qualified prospects'],['Approved drafts',M.approved(c,account)+' emails'],['Daily goal',c.target+' prospects · quality first'],['Schedule',c.days.join(', ')+' · '+c.time+' '+c.timezone],['Approval',c.approval==='daily'?'Review every day':'Use approved writing settings'],['Sender',account.email]].map(([k,v])=>`<div class="review-item"><small>${k}</small><strong>${esc(v)}</strong></div>`).join('')}</div><div class="checklist"><div>${icon('check')} Personalization grounded in campaign context</div><div>${icon('check')} Duplicates and poor-fit prospects held back</div><div>${icon('check')} Follow-ups stop on replies and opt-outs</div></div><label class="context-banner"><input id="launch-check" type="checkbox"><span>I understand this launches a simulated campaign. No real emails will be sent.</span></label></section>`}
-function accountView(){return `<div class="heading"><div><div class="eyebrow">WORKSPACE SETTINGS</div><h1>The context behind every conversation.</h1><p>Tell your assistant who you are, who you help, and how you sound.</p></div><button class="primary" onclick="saveAccount()">Save company context</button></div><div class="wizard-grid"><div class="stack"><section class="panel"><div class="panel-header"><h2>Company & offering</h2>${icon('grid')}</div>${accountField('Company name','company')}${accountField('Website','website')}${accountField('What do you offer?','offering',true)}${accountField('Ideal customer profile','icp',true)}${accountField('Approved proof points','proof',true)}${accountField('Exclude from outreach','exclusions',true)}</section><section class="panel"><div class="panel-header"><h2>Email identity</h2>${badge('Preview only')}</div><div class="two-col">${accountField('Sender name','sender')}${accountField('Email address','email')}</div>${accountField('Signature','signature',true)}<div class="field"><label for="a-tone">Default tone</label><select id="a-tone">${['Conversational','Professional','Warm'].map(x=>`<option ${account.tone===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="notice">${icon('shield')}This stores a preview identity only. No mailbox is connected and no credentials are requested.</div></section></div><aside class="wizard-aside panel"><h2>One source of context</h2><div class="timeline"><div class="timeline-item"><span class="time-dot">1</span><div><strong>Qualify the right people</strong><p>Audience, offering, and exclusions guide fit.</p></div></div><div class="timeline-item"><span class="time-dot">2</span><div><strong>Write in your voice</strong><p>Your tone and proof points shape the draft.</p></div></div><div class="timeline-item"><span class="time-dot">3</span><div><strong>Add campaign intent</strong><p>A chat brief adds context to each new campaign.</p></div></div></div><p class="helper">Saved changes apply to new campaign briefs. Existing briefs remain as you reviewed them.</p></aside></div></div>`}
-function accountField(label,k,multi=false){return `<div class="field"><label for="a-${k}">${label}</label>${multi?`<textarea id="a-${k}">${esc(account[k])}</textarea>`:`<input id="a-${k}" value="${esc(account[k])}">`}</div>`}
-function saveAccount(){const next={...account};Object.keys(account).forEach(k=>{const el=document.getElementById('a-'+k);if(el)next[k]=el.value.trim()});if(!next.company||!next.offering||!next.icp||!next.sender||!next.email){toast('Complete company, offering, audience, and sender details.');return}account=next;render();toast('Company context saved for this preview session.')}
-function trackingView(){const c=current(),ready=M.selected(c).length,approved=M.approved(c,account);return `<button class="back-link" onclick="navigate('campaigns')">← All campaigns</button><div class="heading"><div><div class="inline"><span class="eyebrow">CAMPAIGN INSIGHTS</span>${badge(c.status==='paused'?'Paused':'Active',c.status==='paused'?'amber':'green')}</div><h1>${esc(c.name)}</h1><p>${c.target} leads/day · ${c.time} ${c.timezone} · ${c.approval==='daily'?'Daily approval':'Approved writing settings'}</p></div><div class="inline"><button onclick="current().status=current().status==='paused'?'active':'paused';render()">${icon('pause')}${c.status==='paused'?'Resume':'Pause'}</button><button class="primary" onclick="reviewEmails()">Review emails ${icon('arrow')}</button></div></div><div class="tabs">${[['overview','Overview'],['leads','Today’s leads'],['activity','Activity']].map(([v,t])=>`<button class="${insightTab===v?'active':''}" onclick="insightTab='${v}';filter='qualified';page=0;render()">${t}</button>`).join('')}</div>${insightTab==='leads'?reviewView(c):insightTab==='activity'?activityPanel(c):`<div class="banner-review">${icon('spark')}<div class="grow"><strong>${approved<M.draftList(c,account).length?`${ready} prospects are waiting for your review`:`Your batch of ${ready} prospects is approved`}</strong><p>${c.batchSent?'This sample batch has been marked sent.':'Review the emails, or simulate the next daily discovery batch.'} Nothing sends automatically in this preview.</p></div><button class="small" onclick="simulateDay()" ${c.status==='paused'?'disabled':''}>Preview next day</button></div><div class="stats-four">${stat('Qualified leads',c.history?182:ready,c.history?'Illustrative · last 7 days':'Current sample batch','people')}${stat('Emails sent',c.history?156:c.batchSent?ready:0,'Simulated delivery only','mail')}${stat('Replies',c.history?19:c.replies||0,c.history?'12 qualified conversations':'Recorded sample replies','chart')}${stat('Meetings',c.history?7:0,c.history?'Illustrative · last 7 days':'No real calendar connection','calendar')}</div><div class="insight-grid"><section class="panel"><div class="panel-header"><div><h2>Campaign performance</h2><p>${c.history?'Illustrative activity · last 7 days':'Sample batch activity · no live tracking'}</p></div><div class="legend"><span><i></i>Qualified</span><span><i class="dark"></i>Sent</span></div></div><div class="chart">${(c.history?[[24,20],[28,24],[26,22],[25,23],[27,24],[26,22],[26,21]]:[[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[ready,c.batchSent?ready:0]]).map(([a,b])=>`<div class="bar-group" title="${a} qualified; ${b} sent"><span class="bar" style="height:${a/30*100}%"></span><span class="bar dark" style="height:${b/30*100}%"></span></div>`).join('')}</div><div class="chart-labels">${['Mon','Tue','Wed','Thu','Fri','Sat','Today'].map(x=>`<span>${x}</span>`).join('')}</div></section><section class="panel"><div class="panel-header"><div><h2>From fit to conversation</h2><p>${c.history?'Example conversion funnel':'Current campaign preview'}</p></div></div>${[['Qualified',c.history?182:ready],['Sent',c.history?156:c.batchSent?ready:0],['Replied',c.history?19:c.replies||0],['Meetings',c.history?7:0]].map(([t,n])=>`<div class="funnel-row"><span>${t}</span><div class="funnel-track"><i style="width:${n/(c.history?182:ready||1)*100}%"></i></div><b>${n}</b></div>`).join('')}</section></div><div class="spacer"></div>${activityPanel(c)}<div class="notice" style="margin-top:20px">${icon('shield')}Delivery and metrics are illustrative. ${c.history?'This example campaign includes fictional historical results.':'Your new campaign starts with zero sends and replies.'} No open-rate or deliverability claims are made.</div><div class="toolbar" style="margin-top:18px"><span class="subtle">Explore how approved emails move through the campaign.</span><div class="inline"><button class="small" onclick="simulateSend()" ${c.status==='paused'||c.batchSent?'disabled':''}>Simulate approved sends</button><button class="small ghost" onclick="simulateReply()" ${!c.batchSent?'disabled':''}>Record sample reply</button></div></div>`}`}
-function activityPanel(c){const events=c.events.length?c.events:[{text:'Daily sample batch ready',detail:'26 qualified leads, 2 need review, 2 excluded.',time:'09:04'},{text:'Company context applied',detail:'Audience fit, signals, and contact quality checked.',time:'09:02'},{text:'Discovery started',detail:'Illustrative daily run. No live research performed.',time:'09:00'}];return `<section class="panel"><div class="panel-header"><h2>Campaign activity</h2>${badge('Preview events')}</div>${events.slice(0,8).map(e=>`<div class="activity-row">${icon('check')}<div><strong style="font-weight:500">${esc(e.text)}</strong><p>${esc(e.detail)}</p></div><time>${e.time}</time></div>`).join('')}</section>`}
-function reviewEmails(){current().step=3;view='builder';messageType='intro';render();window.scrollTo(0,0)}
-function simulateDay(){const c=current();if(c.status==='paused')return;c.batch++;c.leads=M.discover(c);c.selected=M.eligible(c).slice(0,c.target).map(l=>l.id);M.invalidate(c);c.batchSent=false;c.replies=0;if(c.approval==='rules')M.draftList(c,account).forEach(x=>x.draft.approved=true);c.events.unshift({text:'Next daily batch simulated',detail:`${M.selected(c).length} prospects ${c.approval==='daily'?'await your approval':'approved using saved settings'}.`,time:'Just now'});render();toast('Next discovery day previewed. No background task was created.')}
-function simulateSend(){const c=current();if(c.status==='paused'||c.batchSent)return;if(M.blockers(c,account).length){toast('Review and approve this batch before simulating sends.');return}c.batchSent=true;c.events.unshift({text:'Sample emails marked sent',detail:`${M.selected(c).length} simulated sends. No messages were delivered.`,time:'Just now'});render()}
-function simulateReply(){const c=current();if(!c.batchSent)return;c.replies=(c.replies||0)+1;c.events.unshift({text:'Sample reply recorded',detail:'Follow-up for this sample conversation stopped.',time:'Just now'});render();toast('Sample reply recorded; follow-up stopped.')}
-function allLeadsView(){return `<div class="heading"><div><div class="eyebrow">PROSPECTS</div><h1>Your people, in one place.</h1><p>Review each campaign’s prospects and the context behind their fit.</p></div></div><div class="panel">${campaigns.filter(c=>c.leads.length).map(c=>`<div class="campaign-row"><span class="campaign-icon">${icon('people')}</span><div class="grow"><h3>${esc(c.name)}</h3><p>${c.leads.length} sample candidates · ${M.eligible(c).length} qualified</p></div><button class="small" onclick="activeId='${c.id}';view='tracking';insightTab='leads';filter='qualified';page=0;search='';render()">Review leads ${icon('arrow')}</button></div>`).join('')}</div>`}
-function overlay(){if(!modal)return '';if(modal==='lead'){const c=current(),l=c.leads.find(x=>x.id===leadId);return `<div class="overlay" onclick="if(event.target===this)closeOverlay()"><section class="drawer" role="dialog" aria-modal="true" aria-label="Lead qualification"><div class="drawer-header"><span class="eyebrow">LEAD INTELLIGENCE</span><button class="icon-btn ghost" aria-label="Close lead details" onclick="closeOverlay()">${icon('close')}</button></div><div class="inline"><span class="avatar" style="height:52px;width:52px;font-size:15px">${l.initials}</span><div><h2>${l.name}</h2><p class="subtle" style="margin:6px 0">${l.role} · ${l.company}</p></div></div><div class="spacer"></div>${badge(l.status==='qualified'?'Qualified':l.status==='review'?'Needs review':'Excluded',l.status==='qualified'?'green':'amber')} <span class="score" style="margin-left:10px">${l.score}/100 fit</span><div class="drawer-section" style="margin-top:25px"><h3>Why this person?</h3><p class="subtle">${l.reason}</p><div class="evidence-item"><strong>${l.signal}</strong><p>${l.fact}</p><small>${l.source} · ${l.date} · fictional evidence</small></div></div><div class="drawer-section"><h3>Qualification checks</h3>${[['Role fit',l.role],['Company fit','B2B SaaS · 10–200 employees · sample'],['Signal freshness','Within configured window · sample'],['Email',l.email||'Not found']].map(([k,v])=>`<div class="summary-row"><small>${k}</small><p>${v}</p></div>`).join('')}</div><div class="notice">${icon('shield')}This is sample research. Scores and email verification are not live results.</div><div class="spacer"></div>${l.status!=='excluded'?`<button class="stretch" onclick="excludeLead('${l.id}')">Exclude from this campaign</button>`:''}</section></div>`}if(modal==='bulk')return `<div class="modal-wrap"><section class="modal" role="dialog" aria-modal="true" aria-label="Approve campaign emails"><div class="panel-header"><h2>Review your email batch</h2><button class="icon-btn ghost" aria-label="Close" onclick="closeOverlay()">${icon('close')}</button></div><p>${M.draftList(current(),account).length} sample drafts for ${M.selected(current()).length} prospects. Approval applies to this exact wording.</p><div class="approval-summary">${M.draftList(current(),account).map(x=>`<article class="approval-item"><h4>${x.l.name} · ${x.v==='intro'?'Initial email':'Follow-up'}</h4><strong style="font-size:12px">${esc(x.draft.subject)}</strong><pre>${esc(x.draft.body)}</pre></article>`).join('')}</div><label class="inline"><input id="bulk-check" type="checkbox">I have reviewed these sample emails.</label><div class="modal-actions"><button onclick="closeOverlay()">Keep editing</button><button class="primary" onclick="approveAll()">Approve all emails</button></div></section></div>`;return ''}
-function excludeLead(id){const c=current(),l=c.leads.find(x=>x.id===id);l.status='excluded';l.reason='Manually excluded from this campaign.';c.selected=c.selected.filter(x=>x!==id);modal=null;render();toast('Prospect excluded.')}
-function closeOverlay(){modal=null;render()}
-function bind(){document.querySelectorAll('[data-cfield]').forEach(el=>el.addEventListener('input',()=>{const c=current(),k=el.dataset.cfield;let v=el.value;if(['target','quality','delay','freshness'].includes(k))v=Number(v);if(k==='target')v=Math.min(30,Math.max(25,v||25));if(k==='delay')v=Math.min(14,Math.max(1,v||3));c[k]=v;if(['offer','audience'].includes(k))M.invalidate(c);if(k==='quality'){document.getElementById('quality-value').textContent=v+'/100';c.leads=[];c.selected=[]}if(k==='target')el.value=v}));document.querySelectorAll('[data-draft]').forEach(el=>el.addEventListener('input',()=>{const {d,c}=activeDraft();d[el.dataset.draft]=el.value;d.approved=false;document.getElementById('approve-one').textContent='Approve email';document.getElementById('approve-one').className='primary small';document.getElementById('approved-count').textContent=`${M.approved(c,account)} of ${M.draftList(c,account).length} drafts approved · edits require fresh approval`}))}
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&modal)closeOverlay();if(e.key==='Tab'&&modal){const controls=[...document.querySelectorAll('[role=dialog] button,[role=dialog] input')];if(e.shiftKey&&document.activeElement===controls[0]){e.preventDefault();controls.at(-1)?.focus()}else if(!e.shiftKey&&document.activeElement===controls.at(-1)){e.preventDefault();controls[0]?.focus()}}});
-if(document.modelContext?.registerTool){Promise.resolve(document.modelContext.registerTool({name:'get_campaign_preview',description:'Read the frontend preview screen and current campaign counts. No live data.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},execute(input){if(!input||Object.keys(input).length)throw Error('Expected empty object');const c=current();return {view,campaign:c?.name,step:c?flowSteps[c.step]:null,qualified:c?M.eligible(c).length:0,selected:c?M.selected(c).length:0,preview:true}}})).catch(()=>{})}
-render();
+/* Outbound campaign studio — screens and interactions, backed by the API in api.js. */
+const icons = { grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>', campaign: '<path d="m3 11 18-8-8 18-3-8-7-2Z"/><path d="m10 13 5-5"/>', people: '<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5"/>', spark: '<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Zm8-2v4m-2-2h4"/>', mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 6 9 7 9-7"/>', linkedin: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7 10v7m0-10v.1M11 17v-7m0 3a3 3 0 0 1 6 0v4"/>', check: '<path d="m5 12 4 4L19 6"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', shield: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/>', arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>', chart: '<path d="M4 4v16h17M8 15l4-5 4 2 5-7"/>', settings: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/>', home: '<path d="m3 10 9-7 9 7v10H3Z"/><path d="M9 20v-7h6v7"/>', search: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>', close: '<path d="m6 6 12 12M6 18 18 6"/>', chevron: '<path d="m9 5 7 7-7 7"/>', copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/>', calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18"/>', pause: '<path d="M8 5v14m8-14v14"/>', plus: '<path d="M12 4v16M4 12h16"/>', download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>', send: '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7Z"/>' };
+const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.spark}</svg>`;
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const $ = id => document.getElementById(id);
+const flowSteps = ['Campaign brief', 'Lead discovery', 'Review leads', 'Email studio', 'Schedule', 'Launch'];
+const FILTER_GROUPS = [['Job roles', 'roles'], ['Industry', 'industries'], ['Location', 'locations'], ['Company size · employees', 'sizes'], ['Seniority', 'seniority'], ['Exclude from outreach', 'exclude']];
+const TIMEZONES = ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'Europe/Berlin', 'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Australia/Sydney', 'UTC'];
 
-function audienceFilters(c){if(!c.filters)c.filters={roles:['Founder','Head of Growth'],industries:['B2B SaaS'],locations:['India'],sizes:['11–50','51–200'],seniority:['Founder / Owner','VP / Head'],exclude:['Existing customers','Competitors','Active opportunities'],notes:''};return c.filters}
-function briefView(c){const f=audienceFilters(c);return `<div class="stack"><section class="panel"><div class="panel-header"><div><h2>Give your campaign a direction</h2><p>Choose your audience using filters. Add context only where it helps.</p></div>${icon('campaign')}</div>${field('Campaign name','name',c.name)}${field('Your offering','offer',c.offer,true)}${c.prompt?`<div class="context-banner">${icon('spark')}<div><strong>Assistant brief</strong><p>${esc(c.prompt)}</p></div></div>`:''}</section><section class="panel"><div class="panel-header"><div><h2>Who’s the right fit?</h2><p>Match any selection within a group, and all selected groups.</p></div>${badge('Structured targeting','green')}</div>${[['Job roles','roles',['Founder','CEO','Head of Growth','Head of Sales','Marketing Director','HR Director','CTO']],['Industry','industries',['B2B SaaS','Fintech','E-commerce','Healthcare','IT services','Manufacturing']],['Location','locations',['India','United States','United Kingdom','UAE','Singapore','Europe']],['Company size · employees','sizes',['1–10','11–50','51–200','201–500','501–1,000','1,000+']],['Seniority','seniority',['Founder / Owner','C-level','VP / Head','Director','Manager']],['Exclude from outreach','exclude',['Existing customers','Competitors','Active opportunities','Agencies']]].map(([label,key,options])=>`<div class="field"><label>${label}</label><div class="signals">${[...new Set([...options,...f[key]])].map(x=>`<button class="${f[key].includes(x)?'selected':''}" data-filter-group="${key}" data-filter-value="${esc(x)}" onclick="toggleAudienceFilter(this.dataset.filterGroup,this.dataset.filterValue)" aria-pressed="${f[key].includes(x)}">${f[key].includes(x)?'✓':'+'} ${esc(x)}</button>`).join('')}</div><div class="inline" style="margin-top:10px"><input id="custom-${key}" aria-label="Custom ${label}" placeholder="Add another ${label.toLowerCase()}…"><button class="small" onclick="addAudienceFilter('${key}')">Add</button></div></div>`).join('')}<div class="field"><label for="audience-notes">Additional context (optional)</label><textarea id="audience-notes" placeholder="For example, prioritize companies building their first outbound team." oninput="audienceFilters(current()).notes=this.value;syncAudience(current())">${esc(f.notes)}</textarea></div><div class="notice"><span><strong>Your audience summary</strong><br><span id="audience-summary">${esc(filterSummary(c))}</span></span></div><p class="helper">Filters configure the campaign brief. This frontend uses sample prospects; it does not run a live filtered search.</p></section></div>`}
-function filterSummary(c){const f=audienceFilters(c);return `${f.roles.join(' or ')||'Any role'} in ${f.industries.join(' or ')||'any industry'}, located in ${f.locations.join(' or ')||'any location'}, at companies with ${f.sizes.join(' or ')||'any number of'} employees. Seniority: ${f.seniority.join(' or ')||'any'}.${f.notes?' '+f.notes:''}`}
-function syncAudience(c){c.audience=filterSummary(c);c.exclusions=audienceFilters(c).exclude.join(', ');M.invalidate(c);c.leads=[];c.selected=[];const el=document.getElementById('audience-summary');if(el)el.textContent=c.audience}
-function toggleAudienceFilter(k,v){const c=current(),f=audienceFilters(c);f[k]=f[k].includes(v)?f[k].filter(x=>x!==v):[...f[k],v];syncAudience(c);render()}
-function addAudienceFilter(k){const v=document.getElementById('custom-'+k).value.trim();if(!v)return;const c=current(),f=audienceFilters(c);if(!f[k].includes(v))f[k].push(v);syncAudience(c);render()}
-function sequenceFor(c){if(!c.sequence)c.sequence={status:'draft',active:0,recipient:0,tone:'Conversational',steps:[1,3,5,7].map((day,i)=>sequenceStep(c,day,i))};return c.sequence}
-function sequenceStep(c,day,i){const text=[`Hi {{first_name}},\n\nFollowing up on my note about {{company}}. ${c.offer}\n\nIs this a priority for your team right now?\n\n${account.signature}`,`Hi {{first_name}},\n\nA useful place to start is looking at how your team currently handles prospect research and outreach.\n\nWould it help if I shared a short overview of how we approach this for teams like {{company}}?\n\n${account.signature}`,`Hi {{first_name}},\n\nI know priorities move quickly. Is there someone else at {{company}} who owns this area, or would another time be better?\n\n${account.signature}`,`Hi {{first_name}},\n\nI’ll close the loop for now. If this becomes relevant for {{company}}, I’d be happy to pick up the conversation.\n\nThanks for your time,\n${account.signature}`];return {day,subject:i===0?'Re: A thought for {{company}}':i===3?'Closing the loop':'A quick follow-up for {{company}}',body:text[Math.min(i,3)],approved:false}}
-function launchedCampaigns(){return campaigns.filter(c=>c.status!=='draft')}
-function seqCampaign(){const list=launchedCampaigns();return list.find(c=>c.id===activeId)||list[0]}
-function sequencesView(){const list=launchedCampaigns();if(!list.length)return `<div class="heading"><div><h1>Keep the conversation moving.</h1><p>Personalized follow-ups for every campaign.</p></div></div><div class="panel empty"><div class="ai-mark">${icon('clock')}</div><h3>Launch your first campaign to get started</h3><p>Your initial email is day 0. Then build a follow-up sequence around it.</p><button class="primary" onclick="navigate('campaigns')">Go to campaigns</button></div>`;const c=seqCampaign(),s=sequenceFor(c);s.active=Math.min(s.active,s.steps.length-1);const step=s.steps[s.active],locked=s.status!=='draft',leads=M.selected(c),person=leads[Math.min(s.recipient,leads.length-1)];return `<div class="heading"><div><div class="eyebrow">FOLLOW-UP STUDIO</div><h1>Keep the conversation moving.</h1><p>One campaign. A thoughtful sequence. Every follow-up in your voice.</p></div>${badge(s.status==='draft'?'Draft sequence':s.status==='paused'?'Paused':'Launched · preview',s.status==='draft'?'':'green')}</div><div class="panel" style="margin-bottom:22px"><div class="two-col"><div><label for="sequence-campaign">Campaign</label><select id="sequence-campaign" onchange="activeId=this.value;render()">${list.map(x=>`<option value="${x.id}" ${x.id===c.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div><div><label>Enrollment</label><div class="context-banner" style="margin:0">${icon('shield')}Only recipients whose initial email was sent and who haven’t replied, bounced, or opted out.</div></div></div><p class="helper">Days are calendar-day offsets from each recipient’s actual initial email send, not from today. Overdue steps are held for review rather than sent together.</p></div><div class="sequence-layout"><aside class="panel sequence-timeline"><div class="panel-header"><h2>Your sequence</h2>${badge(s.steps.length+' emails')}</div><div class="sequence-origin">${icon('mail')}<div><strong>Day 0 · Initial email</strong><small>From your launched campaign</small></div></div>${s.steps.map((x,i)=>`<button class="sequence-node ${i===s.active?'active':''}" onclick="sequenceFor(seqCampaign()).active=${i};render()"><span class="sequence-day">${x.day}<small>DAY</small></span><span class="grow"><strong>${['Gentle reminder','Add value','Find the right moment','Close the loop'][i]||'Follow-up email'}</strong><small>${x.approved?'✓ Approved':'Needs approval'}</small></span>${icon('chevron')}</button>`).join('')}<button class="stretch small" style="margin-top:18px" onclick="addSequenceStep()" ${locked||s.steps.length>=8?'disabled':''}>${icon('plus')} Add follow-up</button><div class="notice" style="margin-top:19px">${icon('shield')}A reply, bounce, or opt-out stops remaining follow-ups.</div></aside><section class="panel"><div class="panel-header"><div><h2>Follow-up ${s.active+1}</h2><p>Pre-drafted for ${esc(c.name)}. Customize before approving.</p></div>${badge(step.approved?'Approved':'Draft',step.approved?'green':'')}</div><div class="two-col"><div class="field"><label for="sequence-day">Days after initial email</label><input id="sequence-day" type="number" min="1" max="90" value="${step.day}" ${locked?'disabled':''} oninput="editSequence('day',Number(this.value))"></div><div class="field"><label for="sequence-tone">Tone for this step</label><select id="sequence-tone" ${locked?'disabled':''} onchange="sequenceRewrite(this.value)"><option value="">Choose a rewrite…</option><option>Conversational</option><option>Professional</option><option>Warm</option><option>Concise</option></select></div></div><div class="field"><label for="sequence-subject">Subject</label><input id="sequence-subject" value="${esc(step.subject)}" ${locked?'disabled':''} oninput="editSequence('subject',this.value)"></div><div class="field"><label for="sequence-body">Email</label><textarea id="sequence-body" style="min-height:245px" ${locked?'disabled':''} oninput="editSequence('body',this.value)">${esc(step.body)}</textarea><p class="helper">Personalization fields: {{first_name}} and {{company}}. Sample drafts, no live AI.</p></div><div class="toolbar"><button class="small ghost" ${locked||s.steps.length===1?'disabled':''} onclick="removeSequenceStep()">Remove this step</button><button class="primary small" id="sequence-approve" ${locked?'disabled':''} onclick="approveSequenceStep()">${step.approved?'✓ Approved':'Approve this email'}</button></div><div class="drawer-section"><div class="panel-header"><h2 style="font-size:14px">Recipient preview</h2><select aria-label="Sequence recipient preview" style="max-width:200px" onchange="sequenceFor(seqCampaign()).recipient=Number(this.value);render()">${leads.map((l,i)=>`<option value="${i}" ${l===person?'selected':''}>${l.name}</option>`).join('')}</select></div><div class="evidence-box" id="sequence-preview">${sequencePreview(step,person)}</div></div></section></div><div class="footer-actions"><span class="helper" id="sequence-count">${s.steps.filter(x=>x.approved).length} of ${s.steps.length} follow-ups approved · preview only</span><div class="inline">${locked?`<button onclick="sequenceFor(seqCampaign()).status='draft';sequenceFor(seqCampaign()).steps.forEach(x=>x.approved=false);render()">Edit sequence</button><button class="primary" onclick="sequenceFor(seqCampaign()).status=sequenceFor(seqCampaign()).status==='active'?'paused':'active';render()">${s.status==='active'?'Pause':'Resume'}</button>`:`<button onclick="reviewSequenceBatch()">Review & approve all</button><button class="primary" onclick="launchSequence()">Launch sequence ${icon('arrow')}</button>`}</div></div>`}
-function personalizeSequence(text,l){return text.replaceAll('{{first_name}}',l?.name.split(' ')[0]||'First name').replaceAll('{{company}}',l?.company||'Company')}
-function sequencePreview(step,l){return `<strong>${esc(personalizeSequence(step.subject,l))}</strong><span style="white-space:pre-wrap">${esc(personalizeSequence(step.body,l))}</span>`}
-function editSequence(k,v){const c=seqCampaign(),s=sequenceFor(c);if(s.status!=='draft')return;s.steps[s.active][k]=v;s.steps[s.active].approved=false;const b=document.getElementById('sequence-approve');if(b)b.textContent='Approve this email';document.getElementById('sequence-count').textContent=`${s.steps.filter(x=>x.approved).length} of ${s.steps.length} follow-ups approved · preview only`;document.getElementById('sequence-preview').innerHTML=sequencePreview(s.steps[s.active],M.selected(c)[s.recipient])}
-function sequenceErrors(s){const errors=[];s.steps.forEach((x,i)=>{if(!Number.isInteger(x.day)||x.day<1||x.day>90||(i&&x.day<=s.steps[i-1].day))errors.push('Use increasing, unique days between 1 and 90.');if(!x.subject.trim()||!x.body.trim())errors.push('Each email needs a subject and body.');if(/{{(?!first_name}}|company}})[^}]*}}/.test(x.subject+x.body))errors.push('Use only the supported personalization fields.');});return [...new Set(errors)]}
-function approveSequenceStep(){const s=sequenceFor(seqCampaign()),errors=sequenceErrors(s);if(errors.length){toast(errors[0]);return}s.steps[s.active].approved=true;render();toast('Follow-up approved.')}
-function addSequenceStep(){const c=seqCampaign(),s=sequenceFor(c);if(s.status!=='draft'||s.steps.length>=8)return;const day=s.steps.at(-1).day+2;if(day>90){toast('Sequence cannot extend past day 90.');return}s.steps.push(sequenceStep(c,day,s.steps.length));s.active=s.steps.length-1;render()}
-function removeSequenceStep(){const s=sequenceFor(seqCampaign());if(s.status!=='draft'||s.steps.length===1)return;s.steps.splice(s.active,1);s.active=Math.max(0,s.active-1);render()}
-function sequenceRewrite(tone){if(!tone)return;const c=seqCampaign(),s=sequenceFor(c),x=s.steps[s.active];x.body=tone==='Concise'?`Hi {{first_name}},\n\nIs this relevant for {{company}} right now? Happy to share more if useful.\n\n${account.signature}`:tone==='Professional'?`Hello {{first_name}},\n\nI am following up on my earlier introduction. ${c.offer}\n\nWould you be available to discuss whether this would be relevant for {{company}}?\n\n${account.signature}`:`Hi {{first_name}},\n\nJust checking back in. ${c.offer}\n\nIs this on the radar at {{company}}? ${tone==='Warm'?'No worries at all if now isn’t the right time.':'Happy to send a quick overview if useful.'}\n\n${account.signature}`;x.approved=false;render();toast('Sample rewrite ready. Approval required.')}
-function reviewSequenceBatch(){const s=sequenceFor(seqCampaign());if(sequenceErrors(s).length){toast(sequenceErrors(s)[0]);return}modal='sequence-bulk';render()}
-function launchSequence(){const c=seqCampaign(),s=sequenceFor(c),errors=sequenceErrors(s);if(errors.length){toast(errors[0]);return}if(!s.steps.every(x=>x.approved)){toast('Review and approve every follow-up first.');return}if(c.status==='paused'){toast('Resume the initial campaign before launching its sequence.');return}s.status='active';c.events.unshift({text:'Follow-up sequence launched in preview',detail:`${s.steps.length} emails on days ${s.steps.map(x=>x.day).join(', ')}. No real sends.`,time:'Just now'});render();toast('Sequence launched in preview. No emails were sent.')}
-const baseOverlay=overlay;
-overlay=function(){if(modal!=='sequence-bulk')return baseOverlay();const c=seqCampaign(),s=sequenceFor(c),l=M.selected(c)[0];return `<div class="modal-wrap"><section class="modal" role="dialog" aria-modal="true" aria-label="Approve follow-up sequence"><div class="panel-header"><h2>Review your follow-up sequence</h2><button class="icon-btn ghost" onclick="closeOverlay()" aria-label="Close">${icon('close')}</button></div><p>Day offsets are measured from each recipient’s first email. Preview for ${esc(l?.name||'a recipient')}.</p><div class="approval-summary">${s.steps.map(x=>`<article class="approval-item"><h4>Day ${x.day}</h4>${sequencePreview(x,l)}</article>`).join('')}</div><label class="inline"><input id="sequence-bulk-check" type="checkbox">I reviewed all follow-up emails and their timing.</label><div class="modal-actions"><button onclick="closeOverlay()">Keep editing</button><button class="primary" onclick="approveSequenceBatch()">Approve all follow-ups</button></div></section></div>`};
-function approveSequenceBatch(){if(!document.getElementById('sequence-bulk-check').checked){toast('Confirm you reviewed the sequence.');return}const s=sequenceFor(seqCampaign());if(sequenceErrors(s).length)return;s.steps.forEach(x=>x.approved=true);modal=null;render();toast('All follow-ups approved. You can now launch.')}
+let S = {
+  view: 'home', loading: true, fatal: '', session: null, context: null, summary: null, campaigns: [],
+  cid: null, c: null, runs: [], runId: 'all', leads: null, lq: { decision: 'qualified', q: '', page: 0 }, leadId: null,
+  drafts: null, messageLead: null, metrics: null, events: [], insightTab: 'overview',
+  tasks: null, taskFilter: 'open', taskCampaign: null,
+  seq: null, seqActive: 0, seqRecipient: 0, seqLeads: [],
+  contacts: null, cq: '', cpage: 0, imports: [], suppressions: [], lastImport: null,
+  chat: { prompt: '', brief: null, busy: false }, modal: null, modalData: null, error: '', busy: false,
+};
+let toastTimer, pollTimer, saveChain = Promise.resolve(), pendingSave = null, saveTimer = null;
+
+// ---------- Utilities ----------
+function badge(text, type = '') { return `<span class="badge ${type}">${esc(text)}</span>`; }
+function toast(text) { const el = $('toast'); if (!el) return; el.className = 'toast'; el.textContent = text; el.style.display = 'block'; clearTimeout(toastTimer); toastTimer = setTimeout(() => el.style.display = 'none', 3800); }
+function fail(e) { if (e?.status === 401) return showAuth('signin', { error: 'Your session ended. Sign in again.' }); toast(e?.message || String(e)); if (e?.status === 409 && S.cid) refreshCampaign(); }
+const fmtDate = iso => iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+const fmtDay = iso => iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+const initials = name => esc(String(name || '?').split(' ').map(x => x[0]).join('').slice(0, 2));
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const clone = v => JSON.parse(JSON.stringify(v));
+function stat(label, value, note, i) { return `<div class="stat-card"><div class="stat-top">${esc(label)}${icon(i)}</div><strong>${esc(value)}</strong><small>${esc(note)}</small></div>`; }
+function loadingPanel(text = 'Loading…') { return `<div class="panel empty"><div class="progress-track"></div><p>${esc(text)}</p></div>`; }
+function poll(fn, ms = 1000) { clearTimeout(pollTimer); pollTimer = setTimeout(async () => { try { if (await fn()) poll(fn, ms); } catch (e) { fail(e); } }, ms); }
+const aiLabel = () => S.session?.ai.provider === 'claude' ? `Claude · ${S.session.ai.model}` : 'Offline templates';
+function generatorLabel(g) { return !g ? '' : g.provider === 'claude' ? `Written by Claude (${g.model})` : g.provider === 'user' ? 'Edited by you' : 'Template draft (no AI provider configured)'; }
+const emailBadge = s => ({ valid: badge('Verified', 'green'), unverified: badge('Unverified', 'amber'), unknown: badge('Unknown', 'amber'), catch_all: badge('Catch-all', 'amber'), invalid: badge('Invalid', 'red'), missing: badge('Missing', 'amber') }[s] || badge(s || 'Unknown', 'amber'));
+
+// ---------- Boot and navigation ----------
+async function boot() {
+  if (await handleAuthLink()) return;
+  try {
+    const [session, context, summary, list] = await Promise.all([Api.get('/api/session'), Api.get('/api/account-context'), Api.get('/api/summary'), Api.get('/api/campaigns')]);
+    Object.assign(S, { session, context, summary, campaigns: list.items, loading: false, auth: null });
+  } catch (e) {
+    S.loading = false;
+    if (e.status === 401) return showAuth(/^#\/signup/.test(String(location.hash || '')) ? 'signup' : 'signin', { error: googleError(String(location.hash || '')) });
+    S.fatal = e.message;
+  }
+  render();
+  // Restore the screen from the URL so a refresh keeps your place.
+  const h = String(location.hash || ''), m = h.match(/^#\/campaign\/([\w-]+)(?:\/(builder|tracking|emails))?/);
+  if (!S.fatal && m) openCampaign(m[1], m[2]);
+  else if (!S.fatal && /^#\/(campaigns|outbox|sequences|contacts|account|team)$/.test(h)) navigate(h.slice(2));
+  else if (!S.fatal && /^#\/(signin|signup)/.test(h)) setHash('#/');
+}
+function setHash(h) { try { if (location.hash !== h) history.replaceState(null, '', h); } catch { /* no history API (tests) */ } }
+async function refreshSummary() { try { const [summary, list] = await Promise.all([Api.get('/api/summary'), Api.get('/api/campaigns')]); S.summary = summary; S.campaigns = list.items; } catch (e) { fail(e); } }
+async function navigate(next) {
+  clearTimeout(pollTimer); S.view = next; S.modal = null; S.error = ''; setHash(next === 'home' ? '#/' : '#/' + next);
+  render(); window.scrollTo(0, 0);
+  try {
+    if (next === 'home' || next === 'campaigns') await refreshSummary();
+    if (next === 'outbox') { S.taskCampaign = null; await loadTasks(); }
+    if (next === 'contacts') await loadContacts();
+    if (next === 'sequences') await loadSequenceView();
+    if (next === 'account') S.context = await Api.get('/api/account-context');
+    if (next === 'team') S.team = await Api.get('/api/team');
+  } catch (e) { fail(e); }
+  render();
+}
+async function openCampaign(id, view) {
+  clearTimeout(pollTimer);
+  Object.assign(S, { cid: id, c: null, leads: null, drafts: null, metrics: null, runs: [], runId: 'all', lq: { decision: 'qualified', q: '', page: 0 }, messageLead: null, insightTab: 'overview', error: '', modal: null });
+  S.view = view || 'builder'; render(); window.scrollTo(0, 0);
+  try {
+    await refreshCampaign();
+    if (!view) S.view = S.c.status === 'draft' ? 'builder' : 'tracking';
+    setHash(`#/campaign/${id}/${S.view}`);
+    await loadViewData();
+  } catch (e) { fail(e); }
+  render();
+}
+async function refreshCampaign() { if (S.cid) S.c = await Api.get(`/api/campaigns/${S.cid}`); }
+async function loadViewData() {
+  const c = S.c;
+  if (S.view === 'builder') {
+    if (c.step === 2) { await loadRuns(); await loadLeads(); }
+    if (c.step === 3) await loadDrafts(true);
+    if (c.step === 5) S.drafts = await Api.get(`/api/campaigns/${c.id}/drafts`);
+  }
+  if (S.view === 'emails') await loadDrafts(true);
+  if (S.view === 'tracking') {
+    const tab = S.insightTab;
+    if (tab === 'overview') { const [m, ev] = await Promise.all([Api.get(`/api/campaigns/${c.id}/metrics`), Api.get(`/api/campaigns/${c.id}/events?limit=8`)]); S.metrics = m; S.events = ev.items; await loadRuns(); }
+    if (tab === 'leads') { await loadRuns(); await loadLeads(); }
+    if (tab === 'queue') { S.taskCampaign = c.id; await loadTasks(); }
+    if (tab === 'activity') S.events = (await Api.get(`/api/campaigns/${c.id}/events?limit=50`)).items;
+  }
+}
+const current = () => S.c;
+
+// ---------- Shell ----------
+function shell(body) {
+  const v = S.view, name = S.context?.data.company || 'Workspace', sender = S.context?.data.sender || '';
+  const due = S.summary?.tasks_due || 0;
+  return `<div class="app"><aside class="sidebar"><div class="brand"><span class="logo">↗</span>outbound<span style="color:#c8e99b">.</span></div><div class="workspace"><span class="avatar">${esc(name[0] || 'W')}</span><div class="grow">${esc(S.session?.workspace.name || name)}<small style="display:block;color:#789583;font-size:10px">${S.session?.user.role === 'owner' ? 'Owner' : 'Member'} · email workspace</small>${(S.session?.workspaces || []).length > 1 ? `<select class="ws-switch" aria-label="Switch workspace" onchange="switchWorkspace(this.value)">${S.session.workspaces.map(w => `<option value="${esc(w.id)}" ${w.id === S.session.workspace.id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}</div></div><div class="nav-label">WORKSPACE</div><nav class="nav">
+    <button class="${v === 'home' ? 'active' : ''}" onclick="navigate('home')">${icon('home')}Home</button>
+    <button class="${['campaigns', 'builder', 'tracking', 'emails'].includes(v) ? 'active' : ''}" onclick="navigate('campaigns')">${icon('campaign')}Campaigns <span class="count">${S.campaigns.length}</span></button>
+    <button class="${v === 'outbox' ? 'active' : ''}" onclick="navigate('outbox')">${icon('send')}Send queue ${due ? `<span class="count">${due}</span>` : ''}</button>
+    <button class="${v === 'sequences' ? 'active' : ''}" onclick="navigate('sequences')">${icon('clock')}Sequences</button>
+    <button class="${v === 'contacts' ? 'active' : ''}" onclick="navigate('contacts')">${icon('people')}Contacts</button>
+    <button class="${v === 'account' ? 'active' : ''}" onclick="navigate('account')">${icon('settings')}Company context</button>
+    <button class="${v === 'team' ? 'active' : ''}" onclick="navigate('team')">${icon('shield')}Team & account</button></nav>
+    <div class="sidebar-bottom"><div class="workspace-note"><strong>${icon('spark')} Quality over volume</strong>Every prospect should have a reason to be on your list.</div><div class="user"><span class="avatar">${esc((S.session?.user.name || sender)[0] || 'U')}</span><div class="grow">${esc(S.session?.user.name || sender)}<small>${esc(S.session?.user.email || '')}</small></div><button class="small ghost signout" onclick="signOut()" title="Sign out">Sign out</button></div></div></aside>
+    <main class="main"><header class="topbar"><span class="mobile-brand">↗ outbound.</span><div class="breadcrumbs">Workspace <span>/</span><strong>${({ home: 'Home', campaigns: 'Campaigns', builder: 'Campaign studio', tracking: 'Campaign insights', emails: 'Email studio', account: 'Company context', team: 'Team & account', contacts: 'Contacts', sequences: 'Sequences', outbox: 'Send queue' })[v]}</strong></div>
+    <div class="top-actions">${S.summary?.sending_stopped ? badge('Sending stopped', 'red') : ''}<span class="preview-pill" title="AI provider">${icon('spark')} ${esc(aiLabel())}</span><span class="preview-pill" title="Delivery mode">Manual sending</span><button class="small ghost" onclick="navigate('account')">${icon('mail')} ${esc(S.context?.data.email || '')}</button></div></header>
+    <div class="content">${body}</div></main></div>${overlay()}`;
+}
+function render() {
+  if (S.auth) { $('app').innerHTML = authView(); return; }
+  const views = { home: homeView, campaigns: campaignsView, builder: builderView, tracking: trackingView, emails: emailsView, account: accountView, team: teamView, contacts: contactsView, sequences: sequencesView, outbox: outboxView };
+  let body;
+  if (S.loading) body = loadingPanel('Loading your workspace…');
+  else if (S.fatal) body = `<div class="panel empty"><h3>We couldn’t load your workspace</h3><p>${esc(S.fatal)}</p><button class="primary" onclick="location.reload()">Try again</button></div>`;
+  else if (['builder', 'tracking', 'emails'].includes(S.view) && !S.c) body = loadingPanel('Loading campaign…');
+  else body = views[S.view]();
+  $('app').innerHTML = shell(body);
+  if (S.modal) { document.querySelector('.app').inert = true; document.querySelector('.overlay textarea,.overlay input,.overlay button,.modal textarea,.modal input,.modal button')?.focus(); }
+}
+
+// ---------- Home ----------
+function homeView() {
+  const ctx = S.context.data, sm = S.summary || {}, b = S.chat.brief;
+  return `<div class="heading"><div><div class="eyebrow">YOUR OUTBOUND WORKSPACE</div><h1>Hello, ${esc(ctx.sender)}.</h1><p>Let’s find the people who should hear from you.</p></div><button class="ghost" onclick="newCampaign()">${icon('plus')} Create manually</button></div>
+  ${sm.sending_stopped ? `<div class="notice amber" style="margin-bottom:18px">${icon('shield')}Sending is stopped for this workspace. Re-enable it from the Send queue.</div>` : ''}
+  ${!ctx.offering ? `<div class="notice amber" style="margin-bottom:18px">${icon('spark')}<span><strong>Welcome! Start with your company context.</strong> Tell us what you offer and who you help; it guides lead qualification and every email. <button class="small" onclick="navigate('account')">Set up company context</button></span></div>` : ''}
+  ${(sm.failed_jobs || []).length ? `<div class="notice amber" style="margin-bottom:18px">${icon('shield')}Some background work failed recently: ${esc(sm.failed_jobs.map(j => j.type).join(', '))}. Open the campaign to retry.</div>` : ''}
+  <div class="home-grid"><div><section class="assistant-panel"><div class="assistant-title"><span class="ai-mark">${icon('spark')}</span><div><h2>Your next campaign starts with a conversation.</h2><p>Campaign assistant · ${esc(aiLabel())}</p></div></div><p class="assistant-intro">Who would you like to reach,<br>and what’s your reason to connect?</p>
+  <div class="prompt-box"><textarea id="prompt" aria-label="Describe your campaign" placeholder="Find founders of recently funded SaaS companies in India. Help me introduce our outbound service…" oninput="S.chat.prompt=this.value">${esc(S.chat.prompt)}</textarea><div class="prompt-footer"><span>${icon('shield')} Grounded in your company context</span><button class="primary" onclick="sendChat()" ${S.chat.busy ? 'disabled' : ''}>${S.chat.busy ? 'Interpreting…' : 'Build my campaign'} ${icon('arrow')}</button></div></div>
+  <div class="suggestions"><button onclick="usePrompt('Reach founders at B2B SaaS companies in India that recently raised funding. Introduce our outbound service.')">${icon('spark')} Recently funded founders</button><button onclick="usePrompt('Find heads of growth at SaaS companies hiring their first sales team in India.')">${icon('people')} Teams hiring in sales</button></div>
+  ${b ? `<div class="conversation"><div class="bubble-user">${esc(b.prompt)}</div><div class="inline"><span class="ai-mark" style="height:28px;width:28px">${icon('spark')}</span><strong style="font-size:13px">Here’s how I read your brief</strong></div><p>${esc(b.summary || 'Confirm these filters before discovery.')}</p>
+    <div class="review-grid" style="margin:12px 0">${FILTER_GROUPS.filter(([, k]) => b.filters[k]?.length).map(([l, k]) => `<div class="review-item"><small>${esc(l)}</small><strong>${esc(b.filters[k].join(' or '))}</strong></div>`).join('')}${b.signals.length ? `<div class="review-item"><small>Signals</small><strong>${esc(b.signals.join(', '))}</strong></div>` : ''}</div>
+    ${b.clarifications.length ? `<div class="notice amber">${icon('shield')}<span>${b.clarifications.map(esc).join('<br>')}</span></div>` : ''}
+    <p class="helper">${b.provider === 'claude' ? `Interpreted by Claude (${esc(b.model)}).` : 'Keyword interpretation — no AI provider configured.'} Nothing is applied until you confirm it in the campaign brief.</p><button class="primary small" onclick="createFromBrief()">Review campaign brief ${icon('arrow')}</button></div>` : ''}</section>
+  <div class="stat-strip">${stat('Active campaigns', sm.active_campaigns ?? 0, 'Across your workspace', 'campaign')}${stat('Awaiting your review', sm.awaiting_review ?? 0, 'Selected leads without approved emails', 'people')}${stat('Emails due to send', sm.tasks_due ?? 0, `${sm.replies_7d ?? 0} replies recorded · last 7 days`, 'mail')}</div></div>
+  <aside class="home-context"><div class="panel"><div class="panel-header"><h2 style="font-size:14px">Your company context</h2><button class="icon-btn ghost" aria-label="Edit company context" onclick="navigate('account')">${icon('settings')}</button></div><div class="context-list"><div><span>COMPANY</span><p>${esc(ctx.company)}</p></div><div><span>WHAT YOU DO</span><p>${esc(ctx.offering)}</p></div><div><span>IDEAL CUSTOMER</span><p>${esc(ctx.icp)}</p></div><div><span>YOUR VOICE</span><p>${esc(ctx.tone)}, clear, and relevant</p></div></div><div class="context-foot"><div class="inline">${icon('check')}<span style="font-size:11px">Version ${S.context.version} · used to qualify leads and write emails</span></div></div></div>
+  <div class="note">${icon('shield')}<span>${sm.contacts ? `${plural(sm.contacts, 'contact')} in your workspace.` : 'Import contacts to start discovering leads.'} Emails are sent by you from your own mailbox; this app prepares and tracks them.</span></div>${!sm.contacts ? `<button class="small" style="margin-top:12px" onclick="navigate('contacts')">${icon('download')} Import contacts</button>` : ''}</aside></div>
+  <section class="panel"><div class="panel-header"><div><h2>Your campaigns</h2><p>A clear view of what’s running and what needs you.</p></div><button class="small ghost" onclick="navigate('campaigns')">View all ${icon('arrow')}</button></div>${S.campaigns.slice(0, 3).map(campaignRow).join('') || '<p class="subtle">No campaigns yet.</p>'}</section>`;
+}
+function campaignRow(c) {
+  const st = { active: ['Active', 'green'], paused: ['Paused', 'amber'], stopped: ['Stopped', ''], draft: ['Draft', ''] }[c.status];
+  return `<div class="campaign-row"><span class="campaign-icon">${icon('campaign')}</span><div class="grow"><h3>${esc(c.name)}</h3><p>${c.status === 'draft' ? 'Draft · ' + flowSteps[c.step] : `${c.config.target} leads/day · ${esc(c.config.schedule.time)} ${esc(c.config.schedule.timezone)} · Daily review`}</p></div>${badge(st[0], st[1])}<div class="compact-metrics"><span><strong>${c.selected_count}</strong>leads</span><span><strong>${c.sent_count}</strong>sent</span><span><strong>${c.reply_count}</strong>replies</span></div><button class="small ghost" onclick="openCampaign('${esc(c.id)}')">${c.status === 'draft' ? 'Continue' : 'View campaign'} ${icon('chevron')}</button></div>`;
+}
+function usePrompt(s) { S.chat.prompt = s; $('prompt').value = s; $('prompt').focus(); }
+async function sendChat() {
+  const prompt = ($('prompt')?.value ?? S.chat.prompt).trim();
+  S.chat.prompt = prompt;
+  if (!prompt) return toast('Describe the audience or campaign you have in mind.');
+  S.chat.busy = true; render();
+  try { S.chat.brief = await Api.post('/api/campaign-briefs/interpret', { prompt }); }
+  catch (e) { fail(e); }
+  S.chat.busy = false; render();
+}
+async function createFromBrief() {
+  const b = S.chat.brief;
+  try { const c = await Api.post('/api/campaigns', { prompt: b.prompt, brief: b, name: b.name }); S.chat = { prompt: '', brief: null, busy: false }; S.campaigns.unshift(c); openCampaign(c.id); }
+  catch (e) { fail(e); }
+}
+async function newCampaign() {
+  try { const c = await Api.post('/api/campaigns', {}); S.campaigns.unshift(c); openCampaign(c.id); } catch (e) { fail(e); }
+}
+function campaignsView() {
+  return `<div class="heading"><div><div class="eyebrow">CAMPAIGNS</div><h1>A little structure. Better conversations.</h1><p>Manage your discovery, outreach, and follow-up in one place.</p></div><button class="primary" onclick="newCampaign()">${icon('plus')} New campaign</button></div><div class="panel">${S.campaigns.map(campaignRow).join('') || '<div class="empty"><h3>No campaigns yet</h3><p>Start from the assistant on Home, or create one manually.</p></div>'}</div>`;
+}
+
+// ---------- Campaign saving ----------
+// Edits are applied locally right away and saved in order with the campaign's expected revision.
+function saveCampaign(patch, { now = false } = {}) {
+  const c = current();
+  if (patch.config) for (const [k, v] of Object.entries(patch.config)) c.config[k] = clone(v);
+  if ('name' in patch) c.name = patch.name;
+  pendingSave = { ...(pendingSave || {}), ...('name' in patch ? { name: patch.name } : {}), config: { ...(pendingSave?.config || {}), ...(patch.config || {}) } };
+  clearTimeout(saveTimer);
+  setSaving('Saving…');
+  if (now) return flushSave();
+  saveTimer = setTimeout(flushSave, 450);
+}
+function flushSave() {
+  clearTimeout(saveTimer);
+  saveChain = saveChain.then(async () => {
+    if (!pendingSave) return;
+    const body = pendingSave; pendingSave = null;
+    if (!Object.keys(body.config).length) delete body.config;
+    try {
+      const fresh = await Api.patch(`/api/campaigns/${S.cid}`, { ...body, revision: S.c.revision });
+      Object.assign(S.c, { revision: fresh.revision, config_version: fresh.config_version, blockers: fresh.blockers, latest_run: fresh.latest_run });
+      setSaving('All changes saved');
+    } catch (e) {
+      setSaving('');
+      if (e.status === 409) { toast('This campaign changed elsewhere. Reloaded the latest version.'); await refreshCampaign(); render(); }
+      else { S.error = e.message; render(); }
+    }
+  });
+  return saveChain;
+}
+function setSaving(text) { const el = $('save-state'); if (el) el.textContent = text; }
+
+// ---------- Campaign wizard ----------
+function builderView() {
+  const c = current();
+  if (c.status !== 'draft') return `<div class="panel empty"><h3>This campaign is ${esc(c.status)}</h3><p>Open its insights to manage leads, emails, and sending.</p><button class="primary" onclick="openCampaign('${esc(c.id)}','tracking')">View campaign</button></div>`;
+  const full = c.step === 2 || c.step === 3;
+  return `<button class="back-link" onclick="navigate('campaigns')">← All campaigns</button><div class="heading"><div><div class="eyebrow">CAMPAIGN STUDIO</div><h1>${esc(c.name)}</h1><p>Find the right people. Give them a reason to reply.</p></div><div class="inline"><span class="helper" id="save-state" style="margin:0"></span>${badge('Email campaign', 'green')}</div></div>
+  <div class="step-nav">${flowSteps.map((s, i) => `<button class="${c.step === i ? 'active' : i < c.step ? 'done' : ''}" onclick="goStep(${i})" ${i > c.step ? 'disabled' : ''}><span class="step-num">${i < c.step ? '✓' : i + 1}</span><span class="step-label">${s}</span></button>`).join('')}</div>
+  <div class="${full ? '' : 'wizard-grid'}"><div>${[briefView, discoveryView, reviewView, studioView, scheduleView, launchView][c.step](c)}${S.error ? `<div class="error" role="alert">${esc(S.error)}</div>` : ''}</div>${full ? '' : summaryView(c)}</div>
+  <div class="footer-actions"><span class="helper">${icon('shield')} You send every email yourself; nothing is sent automatically.</span><div class="inline">${c.step ? '<button onclick="goStep(current().step-1)">Back</button>' : ''}<button class="primary" onclick="continueFlow()" ${S.busy ? 'disabled' : ''}>${['Configure discovery', 'Review leads', 'Create emails', 'Set schedule', 'Review campaign', 'Launch campaign'][c.step]} ${icon('arrow')}</button></div></div>`;
+}
+async function goStep(n) {
+  await flushSave();
+  const c = current(); c.step = n; S.error = ''; clearTimeout(pollTimer);
+  render(); window.scrollTo(0, 0);
+  try { const fresh = await Api.patch(`/api/campaigns/${c.id}`, { step: n }); if (n === 5) S.c = fresh; await loadViewData(); } catch (e) { fail(e); }
+  render();
+}
+async function continueFlow() {
+  const c = current(); S.error = '';
+  await flushSave();
+  const f = c.config.filters;
+  if (c.step === 0 && (!c.name.trim() || !c.config.offer.trim())) S.error = 'Complete the campaign name and offering.';
+  else if (c.step === 0 && !f.roles.length && !f.industries.length) S.error = 'Choose at least one job role or industry.';
+  else if (c.step === 1 && !c.config.signals.length) S.error = 'Select at least one signal.';
+  else if (c.step === 2 && !S.leads?.selected) S.error = 'Discover and select qualified leads first.';
+  else if (c.step === 3 && (!S.drafts?.total || S.drafts.approved < S.drafts.total)) S.error = 'Approve the emails individually or review and approve all.';
+  else if (c.step === 4 && (!c.config.schedule.days.length || !c.config.schedule.time)) S.error = 'Choose at least one day and a time.';
+  else if (c.step === 5) return launchCampaign();
+  if (S.error) return render();
+  return goStep(c.step + 1);
+}
+function summaryView(c) {
+  return `<aside class="wizard-aside"><div class="panel"><h2 style="font-size:14px">Campaign at a glance</h2>${[['Workspace', S.context.data.company], ['Context', `${c.prompt ? 'Assistant brief + ' : ''}company context v${c.context.version}`], ['Lead source', c.config.source === 'salesnav' ? 'Sales Navigator export (CSV import)' : 'Imported contacts'], ['Daily goal', `${c.config.target} leads · 25–30 range`], ['Quality threshold', `${c.config.quality}/100 minimum fit`], ['Sender identity', c.context.data.email]].map(([k, v]) => `<div class="summary-row"><small>${k}</small><p>${esc(v)}</p></div>`).join('')}${c.context.version !== S.context.version ? `<button class="small ghost" onclick="useLatestContext()">Use latest company context (v${S.context.version})</button>` : ''}</div><div class="note">${icon('spark')}<span>Strong fit comes first. If fewer than 25 leads qualify, you’ll see the shortfall instead of a lower bar.</span></div></aside>`;
+}
+async function useLatestContext() {
+  try { await flushSave(); S.c = await Api.patch(`/api/campaigns/${S.cid}`, { revision: S.c.revision, context: 'latest' }); toast('Campaign now uses your latest company context. Regenerate drafts to apply it.'); render(); } catch (e) { fail(e); }
+}
+function field(label, key, value, textarea = false, handler) {
+  const h = handler || `saveCampaign({config:{${key}:this.value}})`;
+  return `<div class="field"><label for="f-${key}">${label}</label>${textarea ? `<textarea id="f-${key}" oninput="${h}">${esc(value)}</textarea>` : `<input id="f-${key}" value="${esc(value)}" oninput="${h}">`}</div>`;
+}
+function briefView(c) {
+  const f = c.config.filters, cat = S.session.catalog;
+  return `<div class="stack"><section class="panel"><div class="panel-header"><div><h2>Give your campaign a direction</h2><p>Choose your audience using filters. Add context only where it helps.</p></div>${icon('campaign')}</div>${field('Campaign name', 'name', c.name, false, 'saveCampaign({name:this.value})')}${field('Your offering', 'offer', c.config.offer, true)}${c.prompt ? `<div class="context-banner">${icon('spark')}<div><strong>Your original assistant brief</strong><p>${esc(c.prompt)}</p></div></div>` : ''}</section>
+  <section class="panel"><div class="panel-header"><div><h2>Who’s the right fit?</h2><p>Match any selection within a group, and all selected groups. Missing data never counts as a match.</p></div>${badge('Structured targeting', 'green')}</div>
+  ${FILTER_GROUPS.map(([label, key]) => `<div class="field"><label>${label}</label><div class="signals">${[...new Set([...(cat[key] || []), ...f[key]])].map(x => `<button class="${f[key].includes(x) ? 'selected' : ''}" data-filter-group="${key}" data-filter-value="${esc(x)}" onclick="toggleAudienceFilter(this.dataset.filterGroup,this.dataset.filterValue)" aria-pressed="${f[key].includes(x)}">${f[key].includes(x) ? '✓' : '+'} ${esc(x)}</button>`).join('')}</div>${key === 'sizes' || key === 'seniority' ? '' : `<div class="inline" style="margin-top:10px"><input id="custom-${key}" aria-label="Custom ${label}" placeholder="Add another ${label.toLowerCase()}…"><button class="small" onclick="addAudienceFilter('${key}')">Add</button></div>`}</div>`).join('')}
+  <div class="field"><label for="audience-notes">Additional context (optional)</label><textarea id="audience-notes" placeholder="For example, prioritize companies building their first outbound team." oninput="saveCampaign({config:{notes:this.value}});$('audience-summary').textContent=filterSummary(current())">${esc(c.config.notes)}</textarea><p class="helper">Notes guide AI fit assessment and writing; they never override filters or exclusions.</p></div>
+  <div class="notice"><span><strong>Your audience summary</strong><br><span id="audience-summary">${esc(filterSummary(c))}</span></span></div></section></div>`;
+}
+function filterSummary(c) {
+  const f = c.config.filters;
+  return `${f.roles.join(' or ') || 'Any role'} in ${f.industries.join(' or ') || 'any industry'}, located in ${f.locations.join(' or ') || 'any location'}, at companies with ${f.sizes.join(' or ') || 'any number of'} employees. Seniority: ${f.seniority.join(' or ') || 'any'}.${f.exclude.length ? ' Excluding ' + f.exclude.join(', ').toLowerCase() + '.' : ''}${c.config.notes ? ' ' + c.config.notes : ''}`;
+}
+function toggleAudienceFilter(k, v) { const f = clone(current().config.filters); f[k] = f[k].includes(v) ? f[k].filter(x => x !== v) : [...f[k], v]; saveCampaign({ config: { filters: f } }); render(); }
+function addAudienceFilter(k) { const v = $('custom-' + k).value.trim(); if (!v) return; const f = clone(current().config.filters); if (!f[k].includes(v)) f[k].push(v); saveCampaign({ config: { filters: f } }); render(); }
+
+function discoveryView(c) {
+  const cfg = c.config, contacts = S.summary?.contacts ?? 0;
+  return `<div class="stack"><section class="panel"><div class="panel-header"><div><h2>Build your discovery engine</h2><p>Choose where prospects come from and why they belong.</p></div>${icon('people')}</div><label>Prospect source</label>
+  <div class="choice-grid"><button class="choice ${cfg.source === 'import' ? 'active' : ''}" onclick="saveCampaign({config:{source:'import'}});render()"><span class="title">${icon('download')} Imported contacts</span><p>People you upload from your CRM or an authorized data provider, deduplicated across imports.</p>${badge(`${contacts} in workspace`, 'green')}</button>
+  <button class="choice ${cfg.source === 'salesnav' ? 'active' : ''}" onclick="saveCampaign({config:{source:'salesnav'}});render()"><span class="title">${icon('linkedin')} Sales Navigator export</span><p>Import a list exported through a method your subscription permits. Emails come from separate enrichment.</p>${badge('CSV import')}</button></div>
+  <div class="choice" style="margin-top:12px;opacity:.6;cursor:not-allowed" aria-disabled="true"><span class="title">${icon('spark')} AI web research</span><p>Automated research needs an authorized search and enrichment provider. Not connected yet.</p>${badge('Unavailable')}</div>
+  ${cfg.source === 'salesnav' ? `<div class="spacer"></div>${field('Saved search or list reference (optional)', 'sourceRef', cfg.sourceRef)}<div class="notice">${icon('shield')}This reference is kept for your records. The app never logs in to LinkedIn or scrapes profiles.</div>` : ''}
+  <div class="toolbar" style="margin-top:16px"><span class="subtle">${contacts ? `${plural(contacts, 'contact')} available to check.` : 'No contacts yet — import a CSV to discover leads.'}</span><button class="small" onclick="navigate('contacts')">${icon('download')} Import contacts</button></div>
+  <div class="source-flow"><span>Import prospects</span>${icon('arrow')}<span>Check filters & email</span>${icon('arrow')}<span>Assess fit with evidence</span>${icon('arrow')}<span>Your review</span></div></section>
+  <section class="panel"><div class="panel-header"><div><h2>Reach out for a reason</h2><p>Prospects must match the audience and at least one recent signal.</p></div></div><div class="signals">${S.session.catalog.signals.map(s => `<button class="${cfg.signals.includes(s) ? 'selected' : ''}" onclick="toggleSignal('${s}')">${cfg.signals.includes(s) ? '✓' : '+'} ${s}</button>`).join('')}</div>
+  <div class="two-col" style="margin-top:24px"><div class="field"><label for="freshness">Signal recency</label><select id="freshness" onchange="saveCampaign({config:{freshness:+this.value}})">${[7, 30, 90].map(n => `<option value="${n}" ${cfg.freshness === n ? 'selected' : ''}>Last ${n} days</option>`).join('')}</select></div><div class="field"><label for="target">Daily lead target</label><input id="target" type="number" min="25" max="30" value="${cfg.target}" onchange="this.value=Math.min(30,Math.max(25,+this.value||25));saveCampaign({config:{target:+this.value}})"><p class="helper">Minimum goal 25 · maximum 30 per day.</p></div></div>
+  <label for="quality">Minimum fit score <strong id="quality-value">${cfg.quality}/100</strong></label><input id="quality" type="range" min="70" max="95" step="5" value="${cfg.quality}" oninput="$('quality-value').textContent=this.value+'/100';saveCampaign({config:{quality:+this.value}})">
+  <label class="inline" style="margin-top:16px"><input type="checkbox" ${cfg.requireVerifiedEmail ? 'checked' : ''} onchange="saveCampaign({config:{requireVerifiedEmail:this.checked}})"> Require a verified email (unverified addresses go to review)</label>
+  <div class="rule-row">${icon('check')}<div><strong>Company and role match</strong><p>Missing role, industry, size, or location data sends a prospect to review instead of counting as a match.</p></div></div><div class="rule-row">${icon('check')}<div><strong>Usable, verified email</strong><p>Invalid, bounced, or suppressed addresses are excluded; unknown or catch-all ones need your review.</p></div></div><div class="rule-row">${icon('check')}<div><strong>Deduplicated and relevant</strong><p>Exclude customers, competitors, opt-outs, and people already contacted.</p></div></div></section></div>`;
+}
+function toggleSignal(s) { const c = current(); const list = c.config.signals.includes(s) ? c.config.signals.filter(x => x !== s) : [...c.config.signals, s]; saveCampaign({ config: { signals: list } }); render(); }
+
+// ---------- Discovery and lead review ----------
+async function loadRuns() { S.runs = (await Api.get(`/api/campaigns/${S.cid}/batches`)).items; watchRun(); }
+async function loadLeads() {
+  const q = S.lq;
+  S.leads = await Api.get(`/api/campaigns/${S.cid}/leads?decision=${q.decision}&q=${encodeURIComponent(q.q)}&page=${q.page}&page_size=7&run_id=${S.runId}`);
+}
+function watchRun() {
+  const r = S.runs[0];
+  if (!r || !['queued', 'running'].includes(r.status)) return;
+  const cid = S.cid;
+  poll(async () => {
+    if (S.cid !== cid) return false;
+    const run = await Api.get(`/api/runs/${r.id}`);
+    S.runs[0] = run;
+    if (['queued', 'running'].includes(run.status)) { const el = $('run-progress'); if (el) el.textContent = run.progress?.total ? `${run.progress.checked} of ${run.progress.total} candidates checked` : 'Queued…'; return true; }
+    await Promise.all([loadLeads(), refreshCampaign(), refreshSummary()]);
+    if (run.status === 'failed') toast(run.error || 'Discovery failed.');
+    render(); return false;
+  });
+}
+async function discoverBatch() {
+  if (S.busy) return;
+  S.busy = true; render();
+  try { await flushSave(); const run = await Api.post(`/api/campaigns/${S.cid}/discovery-runs`, {}, { idem: Api.key() }); S.runs = [run, ...S.runs.filter(r => r.id !== run.id)]; S.runId = 'all'; S.lq = { decision: 'qualified', q: '', page: 0 }; watchRun(); }
+  catch (e) { fail(e); }
+  S.busy = false; render();
+}
+function reviewView(c) {
+  const run = S.runs[0], running = run && ['queued', 'running'].includes(run.status);
+  if (running || !S.runs.length) return `<div class="panel empty"><div class="ai-mark">${icon('spark')}</div><h3>${running ? 'Checking fit, context, and contact details…' : 'Let’s find your first daily batch'}</h3><p>${running ? '' : 'Discovery checks your imported contacts against this campaign’s filters, signals, and exclusions, then assesses fit with the evidence on file.'}</p>${running ? `<div class="progress-track"></div><p class="helper" id="run-progress">${run.progress?.total ? `${run.progress.checked} of ${run.progress.total} candidates checked` : 'Queued…'}</p>` : (S.summary?.contacts ? `<button class="primary" onclick="discoverBatch()" ${S.busy ? 'disabled' : ''}>${icon('spark')} Run discovery</button>` : `<button class="primary" onclick="navigate('contacts')">${icon('download')} Import contacts first</button>`)}</div>`;
+  const L = S.leads;
+  if (!L) return loadingPanel('Loading leads…');
+  const viewRun = S.runId === 'all' ? null : S.runs.find(r => r.id === S.runId);
+  const qualified = viewRun ? viewRun.qualified : (L.counts.qualified || 0), target = c.config.target;
+  const stale = c.latest_run && c.latest_run.config_version < c.config_version;
+  return `<div class="discovery-hero"><div class="discovery-count">${qualified}<small> / ${target}</small></div><div class="grow"><h3>${qualified >= 25 ? 'Quality-checked prospects, ready for you.' : 'Quality first. This batch is below target.'}</h3><p>${S.runs.length > 1 ? `${S.runs.length} batches · ` : ''}latest batch ${run.batch}: ${run.candidates} candidates checked, ${run.status}${run.finished_at ? ' ' + fmtDate(run.finished_at) : ''}</p></div><select aria-label="Batch" style="max-width:190px" onchange="S.runId=this.value;S.lq.page=0;reloadLeads()"><option value="all">All batches</option>${S.runs.map(r => `<option value="${esc(r.id)}" ${S.runId === r.id ? 'selected' : ''}>Batch ${r.batch} · ${fmtDay(r.created_at)} · ${r.qualified} qualified</option>`).join('')}</select>${c.status !== 'stopped' ? `<button class="small ghost" onclick="discoverBatch()" ${S.busy ? 'disabled' : ''}>Run discovery again</button>` : ''}</div>
+  ${run.status === 'failed' ? `<div class="notice amber" style="margin-bottom:20px">${icon('shield')}Batch ${run.batch} failed: ${esc(run.error)}. Run discovery again to retry.</div>` : ''}
+  ${run.shortfall_reason ? `<div class="notice ${qualified < 25 ? 'amber' : ''}" style="margin-bottom:20px">${icon('shield')}${esc(run.shortfall_reason)}</div>` : ''}
+  ${stale ? `<div class="notice" style="margin-bottom:20px">${icon('spark')}Campaign settings changed after the latest batch. Existing leads keep their original assessment; run discovery again to apply the new settings to new contacts.</div>` : ''}
+  <div class="panel"><div class="tabs">${[['qualified', 'Qualified'], ['review', 'Needs review'], ['excluded', 'Excluded']].map(([k, n]) => `<button class="${S.lq.decision === k ? 'active' : ''}" onclick="S.lq.decision='${k}';S.lq.page=0;reloadLeads()">${n} ${badge(L.counts[k] || 0)}</button>`).join('')}</div>
+  <div class="toolbar"><div class="search">${icon('search')}<input id="lead-search" aria-label="Search prospects" placeholder="Search people or companies" value="${esc(S.lq.q)}" oninput="S.lq.q=this.value;S.lq.page=0;clearTimeout(window._st);window._st=setTimeout(reloadLeads,300)"></div><span class="subtle">${L.selected} selected for email drafts</span><button class="small" onclick="selectTopLeads()">Select top ${target} qualified</button><button class="small ghost" onclick="clearSelection()">Clear selection</button></div>
+  <div id="lead-results">${leadTable(c)}</div><p class="helper">Click a prospect to see the checks and evidence behind their fit.</p></div>`;
+}
+async function reloadLeads() { try { await loadLeads(); const el = $('lead-results'); if (el && S.lq.q) { el.innerHTML = leadTable(current()); return; } render(); if (S.lq.q) { const i = $('lead-search'); i?.focus(); i?.setSelectionRange(i.value.length, i.value.length); } } catch (e) { fail(e); } }
+function leadTable() {
+  const L = S.leads, start = L.page * L.page_size;
+  return `<div class="table-wrap"><table><thead><tr><th></th><th>Prospect</th><th>Company</th><th>Top signal</th><th>Fit</th><th>Email</th><th></th></tr></thead><tbody>${L.items.map(l => `<tr><td><input type="checkbox" aria-label="Select ${esc(l.name)}" onchange="toggleLead('${esc(l.id)}',this.checked)" ${l.selected ? 'checked' : ''} ${l.decision !== 'qualified' || l.send_status === 'sent' ? 'disabled' : ''}></td><td><div class="person"><span class="avatar">${initials(l.name)}</span><div><strong>${esc(l.name)}</strong><small>${esc(l.role)}</small></div></div></td><td>${esc(l.company)}<small>${esc([l.industry, l.employees && l.employees + ' employees'].filter(Boolean).join(' · '))}</small></td><td>${l.evidence[0]?.signal ? badge(l.evidence[0].signal) : '<span class="subtle">—</span>'}</td><td><span class="score-ring">${l.score}</span></td><td>${emailBadge(l.suppressed ? 'invalid' : l.email_status)}</td><td><button class="icon-btn ghost" aria-label="Inspect ${esc(l.name)}" onclick="S.leadId='${esc(l.id)}';S.modal='lead';render()">${icon('chevron')}</button></td></tr>`).join('') || '<tr><td colspan="7">No prospects match this view.</td></tr>'}</tbody></table></div>
+  <div class="table-bottom"><span>${L.total ? `${start + 1}–${Math.min(start + L.page_size, L.total)} of ${L.total} prospects` : 'No prospects'}</span><div class="inline"><button class="small ghost" ${L.page === 0 ? 'disabled' : ''} onclick="S.lq.page--;reloadLeads()">← Previous</button><button class="small ghost" ${start + L.page_size >= L.total ? 'disabled' : ''} onclick="S.lq.page++;reloadLeads()">Next →</button></div></div>`;
+}
+async function toggleLead(id, selected) { try { await Api.patch(`/api/campaign-leads/${id}`, { selected }); await loadLeads(); render(); } catch (e) { fail(e); await loadLeads(); render(); } }
+async function selectTopLeads() {
+  try {
+    const all = await Api.get(`/api/campaigns/${S.cid}/leads?decision=qualified&page_size=100&run_id=${S.runId}`);
+    const top = all.items.slice().sort((a, b) => b.score - a.score).slice(0, current().config.target).map(l => l.id);
+    await Api.post(`/api/campaigns/${S.cid}/lead-selection`, { lead_ids: all.items.filter(l => l.selected && !top.includes(l.id) && l.send_status !== 'sent').map(l => l.id), selected: false });
+    await Api.post(`/api/campaigns/${S.cid}/lead-selection`, { lead_ids: top, selected: true });
+    await loadLeads(); render();
+  } catch (e) { fail(e); }
+}
+async function clearSelection() {
+  try { const all = await Api.get(`/api/campaigns/${S.cid}/leads?decision=all&selected=1&page_size=100`); await Api.post(`/api/campaigns/${S.cid}/lead-selection`, { lead_ids: all.items.filter(l => l.send_status !== 'sent').map(l => l.id), selected: false }); await loadLeads(); render(); } catch (e) { fail(e); }
+}
+async function excludeLead(id) {
+  try { await Api.patch(`/api/campaign-leads/${id}`, { decision: 'excluded', reason: 'Manually excluded from this campaign.' }); S.modal = null; await loadLeads(); render(); toast('Prospect excluded.'); } catch (e) { fail(e); }
+}
+async function qualifyLead(id) {
+  const reason = $('qualify-reason')?.value.trim();
+  if (!reason) return toast('Explain why this lead qualifies.');
+  try { await Api.patch(`/api/campaign-leads/${id}`, { decision: 'qualified', reason }); S.modal = null; await loadLeads(); render(); toast('Lead qualified. Select it to include it in this batch.'); } catch (e) { fail(e); }
+}
+
+// ---------- Email studio ----------
+async function loadDrafts(autostart = false) {
+  const d = await Api.get(`/api/campaigns/${S.cid}/drafts`);
+  S.drafts = d;
+  const missing = d.items.some(x => !x.draft), running = d.job && ['queued', 'running'].includes(d.job.status);
+  if (autostart && missing && !running && d.job?.status !== 'dead') { await Api.post(`/api/campaigns/${S.cid}/draft-runs`, {}, { idem: Api.key() }); S.drafts.job = { status: 'queued' }; }
+  if (missing || running || S.drafts.job?.status === 'queued') {
+    const cid = S.cid;
+    poll(async () => { if (S.cid !== cid || !['builder', 'emails'].includes(S.view)) return false; const n = await Api.get(`/api/campaigns/${cid}/drafts`); S.drafts = n; const busy = n.job && ['queued', 'running'].includes(n.job.status); if (!busy) render(); else { const el = $('draft-progress'); if (el) el.textContent = `${n.items.filter(x => x.draft).length} of ${n.total} drafts ready`; } return busy; }, 1200);
+  }
+}
+function activeItem() { const items = S.drafts?.items || []; return items.find(x => x.lead.id === S.messageLead) || items[0]; }
+function studioView(c) {
+  const D = S.drafts;
+  if (!D) return loadingPanel('Loading drafts…');
+  if (!D.total) return `<div class="panel empty"><h3>No qualified leads selected</h3><p>Go back to lead review to select prospects.</p></div>`;
+  const busy = D.job && ['queued', 'running'].includes(D.job.status);
+  const item = activeItem(); S.messageLead = item.lead.id;
+  const l = item.lead, d = item.draft, w = c.config.writing, ctx = c.context.data;
+  const evidence = d ? l.evidence.filter(e => d.evidence_ids.includes(e.id)) : [];
+  return `<div class="panel" style="margin-bottom:20px"><div class="panel-header"><div><h2>Emails that sound like you</h2><p>One reviewable draft per recipient, grounded in their evidence and your company context.</p></div><button class="primary small" onclick="openBulk()" ${busy || !d ? 'disabled' : ''}>Review & approve all</button></div>
+  <div class="three-col">${[['Tone', 'tone', ['Conversational', 'Professional', 'Warm']], ['Length', 'length', ['Balanced', 'Concise']], ['Personalization angle', 'angle', ['Signal-led', 'Company-led']], ['Call to action', 'cta', ['Start a conversation', 'Book a meeting', 'Ask permission']]].map(([label, key, opts]) => `<div><label for="opt-${key}">${label}</label><select id="opt-${key}" onchange="changeWriting('${key}',this.value)" ${busy ? 'disabled' : ''}>${opts.map(o => `<option ${w[key] === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>`).join('')}</div>
+  <div class="approval-progress"><span style="width:${D.approved / D.total * 100}%"></span></div><span class="helper" id="approved-count">${D.approved} of ${D.total} drafts approved · approval applies to the exact wording; edits need fresh approval</span>
+  ${busy ? `<div class="notice" style="margin-top:12px">${icon('spark')}<span>Writing drafts with ${esc(aiLabel())}… <span id="draft-progress">${D.items.filter(x => x.draft).length} of ${D.total} drafts ready</span></span></div>` : ''}
+  ${D.job?.status === 'dead' ? `<div class="notice amber" style="margin-top:12px">${icon('shield')}<span>Drafting failed: ${esc(D.job.last_error)}. <button class="small" onclick="regenerate(false)">Retry</button></span></div>` : ''}</div>
+  <div class="editor-layout"><aside class="recipient-list"><div class="list-label">${D.total} RECIPIENTS</div>${D.items.slice(0, 8).map(x => recipientButton(x, l)).join('')}${D.total > 8 ? `<div style="padding:15px"><label for="other-lead">All ${D.total} recipients</label><select id="other-lead" onchange="selectRecipient(this.value)">${D.items.map(x => `<option value="${esc(x.lead.id)}" ${x.lead.id === l.id ? 'selected' : ''}>${esc(x.lead.name)}${x.draft?.approved ? ' ✓' : ''}</option>`).join('')}</select></div>` : ''}</aside>
+  <section class="editor-main">${!d ? `<div class="empty">${busy ? '<div class="progress-track"></div>' : ''}<p>${busy ? 'Drafting this email…' : 'No draft yet.'}</p></div>` : `
+    <div class="email-meta"><span>To</span>${esc(l.name)} &lt;${esc(l.email)}&gt; ${emailBadge(l.email_status)}</div><div class="email-meta"><span>From</span>${esc(ctx.sender)} &lt;${esc(ctx.email)}&gt; <small class="subtle">· you send this from your own mailbox</small></div>
+    <div class="email-meta"><label for="email-subject" style="margin:0;color:var(--muted);min-width:38px">Subject</label><input id="email-subject" value="${esc(d.subject)}" onchange="saveDraftEdit()" ${l.send_status === 'sent' ? 'disabled' : ''}></div>
+    <textarea class="email-body" id="email-body" aria-label="Personalized email body" onchange="saveDraftEdit()" ${l.send_status === 'sent' ? 'disabled' : ''}>${esc(d.body)}</textarea>
+    ${d.review_note ? `<div class="notice amber">${icon('shield')}${esc(d.review_note)}</div>` : ''}${d.stale ? `<div class="notice">${icon('spark')}Written with earlier campaign settings. <button class="small ghost" onclick="regenerate(true)">Regenerate outdated drafts</button></div>` : ''}
+    <div class="evidence-box"><strong>${icon('spark')} Why this email is relevant</strong>${evidence.length ? evidence.map(e => `${esc(e.fact)} <small class="subtle">${e.event_date ? '· ' + esc(e.event_date) : ''} ${e.source_url ? `· <a href="${esc(e.source_url)}" target="_blank" rel="noopener noreferrer">source</a>` : ''}</small>`).join('<br>') : 'No signal evidence cited in this draft.'}<br>Matches: ${esc(l.role)} · ${l.score}/100 fit · ${esc(l.rationale)}</div>
+    <div class="rewrite-bar"><span class="helper" style="margin:0 3px 0 0">Refine</span><button onclick="rewrite('human')" ${l.send_status === 'sent' ? 'disabled' : ''}>${icon('spark')} More natural</button><button onclick="rewrite('short')" ${l.send_status === 'sent' ? 'disabled' : ''}>Shorter</button><button onclick="rewrite('direct')" ${l.send_status === 'sent' ? 'disabled' : ''}>More direct</button></div>
+    <div class="email-footer"><span class="helper">Revision ${d.rev} · ${esc(generatorLabel(d.generator))}</span>${l.send_status === 'sent' ? badge('Sent', 'green') : `<button id="approve-one" class="${d.approved ? 'ghost' : 'primary'} small" onclick="approveOne()">${d.approved ? '✓ Approved' : 'Approve email'}</button>`}</div>`}</section></div>`;
+}
+function recipientButton(x, l) { return `<button class="${x.lead.id === l.id ? 'active' : ''}" onclick="selectRecipient('${esc(x.lead.id)}')"><span class="avatar">${initials(x.lead.name)}</span><span class="grow"><strong>${esc(x.lead.name)}</strong><small>${esc(x.lead.company)}</small></span>${x.draft?.approved ? icon('check') : ''}</button>`; }
+async function selectRecipient(id) { await saveDraftEdit(); S.messageLead = id; render(); }
+function changeWriting(key, value) {
+  const c = current(), n = S.drafts?.items.filter(x => x.draft && x.lead.send_status !== 'sent').length || 0;
+  S.modal = 'regen'; S.modalData = { key, value, n }; render();
+}
+async function confirmWriting() {
+  const { key, value } = S.modalData; S.modal = null;
+  const w = { ...current().config.writing, [key]: value };
+  saveCampaign({ config: { writing: w } }, { now: true });
+  await flushSave();
+  await regenerate(true);
+}
+async function regenerate(stale) {
+  try { await Api.post(`/api/campaigns/${S.cid}/draft-runs`, { regenerate: stale }, { idem: Api.key() }); S.drafts.job = { status: 'queued' }; render(); await loadDrafts(); render(); toast('Writing new drafts. Review and approve the new wording.'); } catch (e) { fail(e); }
+}
+function replaceDraft(leadId, draft) { const x = S.drafts.items.find(i => i.lead.id === leadId); const was = x.draft?.approved; x.draft = draft; S.drafts.approved += (draft.approved ? 1 : 0) - (was ? 1 : 0); }
+async function saveDraftEdit() {
+  const item = activeItem(), d = item?.draft, s = $('email-subject'), b = $('email-body');
+  if (!d || !s || !b || (s.value === d.subject && b.value === d.body)) return d;
+  try {
+    const next = await Api.patch(`/api/drafts/${d.id}`, { revision_id: d.revision_id, subject: s.value, body: b.value });
+    replaceDraft(item.lead.id, next);
+    const btn = $('approve-one'); if (btn) { btn.textContent = 'Approve email'; btn.className = 'primary small'; }
+    const cnt = $('approved-count'); if (cnt) cnt.textContent = `${S.drafts.approved} of ${S.drafts.total} drafts approved · edits need fresh approval`;
+    return next;
+  } catch (e) {
+    fail(e);
+    if (e.status === 409 && e.body.draft) { replaceDraft(item.lead.id, e.body.draft); render(); }
+    return null;
+  }
+}
+async function rewrite(style) {
+  const item = activeItem();
+  if (!item?.draft) return;
+  const saved = await saveDraftEdit(); if (!saved) return;
+  S.busy = true; toast('Rewriting…');
+  try { replaceDraft(item.lead.id, await Api.post(`/api/drafts/${saved.id}/rewrites`, { revision_id: saved.revision_id, style })); render(); toast('Rewrite ready for review.'); } catch (e) { fail(e); }
+  S.busy = false;
+}
+async function approveOne() {
+  const item = activeItem(), saved = await saveDraftEdit();
+  if (!saved) return;
+  if (!saved.subject.trim() || !saved.body.trim()) return toast('Add a subject and message first.');
+  try {
+    const r = await Api.post('/api/approvals', { items: [{ draft_id: saved.id, revision_id: saved.revision_id }] }, { idem: Api.key() });
+    const res = r.results[0];
+    if (res.status !== 'approved') { toast(res.message); await loadDrafts(); render(); return; }
+    replaceDraft(item.lead.id, { ...saved, approved: true });
+    const next = S.drafts.items.find(x => x.draft && !x.draft.approved);
+    if (next) S.messageLead = next.lead.id;
+    render(); toast('Email approved.');
+  } catch (e) { fail(e); }
+}
+async function openBulk() { await saveDraftEdit(); S.modal = 'bulk'; render(); }
+async function approveAll() {
+  if (!$('bulk-check').checked) return toast('Confirm you reviewed the drafts.');
+  const items = S.drafts.items.filter(x => x.draft && !x.draft.approved).map(x => ({ draft_id: x.draft.id, revision_id: x.draft.revision_id }));
+  if (!items.length) { S.modal = null; render(); return; }
+  try {
+    const r = await Api.post('/api/approvals', { confirm: true, items }, { idem: Api.key() });
+    S.modal = null; await loadDrafts(); render();
+    toast(r.failed ? `${r.approved} approved; ${r.failed} need attention: ${r.results.find(x => x.status !== 'approved').message}` : `${r.approved} emails approved.`);
+  } catch (e) { fail(e); }
+}
+function emailsView() {
+  const c = current();
+  return `<button class="back-link" onclick="openCampaign('${esc(c.id)}','tracking')">← Campaign insights</button><div class="heading"><div><div class="eyebrow">EMAIL STUDIO</div><h1>${esc(c.name)}</h1><p>Approved emails for this live campaign go straight to your send queue.</p></div></div>${studioView(c)}`;
+}
+
+// ---------- Schedule and launch ----------
+function scheduleView(c) {
+  const s = c.config.schedule, zones = TIMEZONES.includes(s.timezone) ? TIMEZONES : [s.timezone, ...TIMEZONES];
+  return `<div class="stack"><section class="panel"><div class="panel-header"><div><h2>A daily rhythm that works for you</h2><p>Set when discovery runs and when follow-ups become due.</p></div>${icon('calendar')}</div>
+  <div class="field"><label>Run on</label><div class="day-picker">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => `<button class="${s.days.includes(d) ? 'selected' : ''}" onclick="toggleDay('${d}')">${d}</button>`).join('')}</div></div>
+  <div class="two-col"><div class="field"><label for="run-time">Daily time</label><input id="run-time" type="time" value="${esc(s.time)}" onchange="saveCampaign({config:{schedule:{...current().config.schedule,time:this.value}}})"></div><div class="field"><label for="timezone">Timezone</label><select id="timezone" onchange="saveCampaign({config:{schedule:{...current().config.schedule,timezone:this.value}}})">${zones.map(z => `<option ${s.timezone === z ? 'selected' : ''}>${esc(z)}</option>`).join('')}</select></div></div>
+  <label>Approval for future daily batches</label>
+  <div class="schedule-card active"><label><input type="radio" name="approval" checked>Review every daily batch ${badge('Recommended', 'green')}</label><p>New leads and drafts wait for your approval before they reach your send queue.</p></div>
+  <div class="schedule-card" style="opacity:.6"><label><input type="radio" name="approval" disabled>Use pre-approved writing rules ${badge('Not available yet')}</label><p>Automatic approval needs an agreed, versioned policy. Until then every batch is reviewed.</p></div>
+  <label style="margin-top:18px">Delivery</label>
+  <div class="schedule-card active"><label><input type="radio" name="delivery" checked>Manual send tasks</label><p>Approved emails appear in your send queue. Open them in your email app or copy them, send from your mailbox, then confirm.</p></div>
+  <div class="schedule-card" style="opacity:.6"><label><input type="radio" name="delivery" disabled>Connected mailbox ${badge('Not available yet')}</label><p>Sending through Gmail or Outlook requires a mailbox integration that isn’t set up.</p></div>
+  <div class="notice">${icon('shield')}Each scheduled day creates at most one new batch. If the server was off, missed days are not backfilled.</div></section>
+  <section class="panel"><h2>Follow-ups have their own workspace</h2><p class="subtle">Launch your initial campaign first. Then open Sequences to draft, approve, and schedule follow-ups measured from each recipient’s own first email.</p><div class="timeline"><div class="timeline-item"><span class="time-dot">1</span><div><strong>${esc(s.time)} · Find and qualify</strong><p>Check up to ${c.config.target} new high-fit prospects.</p></div></div><div class="timeline-item"><span class="time-dot">2</span><div><strong>Write personalized emails</strong><p>Use your company context and each prospect’s evidence.</p></div></div><div class="timeline-item"><span class="time-dot">3</span><div><strong>Wait for your approval</strong><p>Approved messages enter your send queue.</p></div></div></div></section></div>`;
+}
+function toggleDay(d) { const s = current().config.schedule; saveCampaign({ config: { schedule: { ...s, days: s.days.includes(d) ? s.days.filter(x => x !== d) : [...s.days, d] } } }); render(); }
+function launchView(c) {
+  const cfg = c.config, b = c.blockers || [];
+  return `<div class="launch-hero"><span class="ai-mark">${icon('campaign')}</span><div><h2>Ready for your first conversation.</h2><p>Here’s exactly what you’re launching.</p></div></div><section class="panel"><div class="review-grid">${[['Audience', filterSummary(c)], ['Source', cfg.source === 'salesnav' ? 'Sales Navigator export (CSV import)' : 'Imported contacts'], ['First batch', `${S.drafts?.total ?? '—'} selected prospects`], ['Approved drafts', `${S.drafts?.approved ?? '—'} emails`], ['Daily goal', cfg.target + ' prospects · quality first'], ['Schedule', cfg.schedule.days.join(', ') + ' · ' + cfg.schedule.time + ' ' + cfg.schedule.timezone], ['Approval', 'Review every day'], ['Delivery', `Manual — you send from ${c.context.data.email}`]].map(([k, v]) => `<div class="review-item"><small>${k}</small><strong>${esc(v)}</strong></div>`).join('')}</div>
+  ${b.length ? `<div class="notice amber">${icon('shield')}<span><strong>Before you launch</strong><br>${b.map(x => esc(x.message)).join('<br>')}</span></div>` : `<div class="checklist"><div>${icon('check')} Every email approved at its exact wording</div><div>${icon('check')} Poor-fit, excluded, and suppressed prospects held back</div><div>${icon('check')} Follow-ups stop on replies, bounces, and opt-outs you record</div></div>`}
+  <label class="context-banner"><input id="launch-check" type="checkbox"><span>I understand that launching adds approved emails to my send queue. I send each one from my own mailbox; nothing is sent automatically.</span></label></section>`;
+}
+async function launchCampaign() {
+  const c = current();
+  if (!$('launch-check')?.checked) { S.error = 'Confirm how sending works to launch.'; return render(); }
+  S.busy = true; render();
+  try {
+    await flushSave(); await refreshCampaign();
+    const r = await Api.post(`/api/campaigns/${c.id}/launch`, { revision: S.c.revision }, { idem: 'launch-' + c.id + '-' + S.c.revision });
+    S.c = r; S.busy = false; S.view = 'tracking'; S.insightTab = 'overview'; setHash(`#/campaign/${c.id}/tracking`);
+    await Promise.all([loadViewData(), refreshSummary()]);
+    render(); window.scrollTo(0, 0); toast(`Campaign launched. ${plural(r.created_tasks, 'email')} ready in your send queue.`);
+  } catch (e) { S.busy = false; S.error = e.message; await refreshCampaign().catch(() => {}); render(); }
+}
+
+// ---------- Campaign insights ----------
+function trackingView() {
+  const c = current(), m = S.metrics;
+  const st = { active: ['Active', 'green'], paused: ['Paused', 'amber'], stopped: ['Stopped', ''] }[c.status] || ['Draft', ''];
+  return `<button class="back-link" onclick="navigate('campaigns')">← All campaigns</button><div class="heading"><div><div class="inline"><span class="eyebrow">CAMPAIGN INSIGHTS</span>${badge(st[0], st[1])}</div><h1>${esc(c.name)}</h1><p>${c.config.target} leads/day · ${esc(c.config.schedule.days.join(', '))} ${esc(c.config.schedule.time)} ${esc(c.config.schedule.timezone)} · Daily approval · Manual sending</p></div>
+  <div class="inline">${c.status === 'stopped' ? '' : `<button onclick="campaignAction('${c.status === 'paused' ? 'resume' : 'pause'}')">${icon('pause')}${c.status === 'paused' ? 'Resume' : 'Pause'}</button><button class="ghost" onclick="S.modal='stop';render()">Stop</button>`}<button class="primary" onclick="openCampaign('${esc(c.id)}','emails')">Review emails ${icon('arrow')}</button></div></div>
+  <div class="tabs">${[['overview', 'Overview'], ['leads', 'Leads'], ['queue', 'Send queue'], ['activity', 'Activity']].map(([v, t]) => `<button class="${S.insightTab === v ? 'active' : ''}" onclick="insightTab('${v}')">${t}</button>`).join('')}</div>
+  ${S.insightTab === 'leads' ? reviewView(c) : S.insightTab === 'queue' ? tasksPanel() : S.insightTab === 'activity' ? activityPanel() : !m ? loadingPanel() : overviewPanel(c, m)}`;
+}
+async function insightTab(t) { S.insightTab = t; S.lq = { decision: 'qualified', q: '', page: 0 }; render(); try { await loadViewData(); } catch (e) { fail(e); } render(); }
+function overviewPanel(c, m) {
+  const max = Math.max(5, ...m.series.qualified, ...m.series.sent);
+  const awaiting = m.selected - m.drafts_approved - 0;
+  return `<div class="banner-review">${icon('spark')}<div class="grow"><strong>${m.queued ? `${plural(m.queued, 'email')} waiting in your send queue` : awaiting > 0 ? `${plural(awaiting, 'prospect')} waiting for email approval` : 'You’re all caught up'}</strong><p>${S.runs[0] ? `Latest batch ${S.runs[0].batch}: ${S.runs[0].qualified} qualified (${esc(S.runs[0].status)}).` : 'No batches yet.'} The next batch runs on the schedule above.</p></div>${m.queued ? `<button class="small" onclick="insightTab('queue')">Open send queue</button>` : ''}<button class="small ghost" onclick="discoverBatch().then(()=>insightTab('leads'))" ${c.status !== 'active' ? 'disabled' : ''}>Run discovery now</button></div>
+  <div class="stats-four">${stat('Qualified leads', m.qualified, `${m.candidates} candidates checked · ${plural(m.batches, 'batch').replace('batchs', 'batches')}`, 'people')}${stat('Emails sent', m.sent, 'Confirmed by you (manual)', 'mail')}${stat('Replies', m.replies, m.reply_rate == null ? 'Recorded manually' : `${m.reply_rate}% of contacted · recorded manually`, 'chart')}${stat('Meetings', m.meetings, 'Recorded manually', 'calendar')}</div>
+  <div class="insight-grid"><section class="panel"><div class="panel-header"><div><h2>Last 7 days</h2><p>Qualified leads and confirmed sends per day (${esc(c.config.schedule.timezone)})</p></div><div class="legend"><span><i></i>Qualified</span><span><i class="dark"></i>Sent</span></div></div><div class="chart">${m.series.days.map((d, i) => `<div class="bar-group" title="${d}: ${m.series.qualified[i]} qualified; ${m.series.sent[i]} sent"><span class="bar" style="height:${m.series.qualified[i] / max * 100}%"></span><span class="bar dark" style="height:${m.series.sent[i] / max * 100}%"></span></div>`).join('')}</div><div class="chart-labels">${m.series.days.map((d, i) => `<span>${i === 6 ? 'Today' : new Date(d + 'T12:00:00Z').toLocaleDateString(undefined, { weekday: 'short' })}</span>`).join('')}</div></section>
+  <section class="panel"><div class="panel-header"><div><h2>From fit to conversation</h2><p>All time · denominators are qualified leads</p></div></div>${[['Qualified', m.qualified], ['Selected', m.selected], ['Approved', m.drafts_approved], ['Sent', m.sent], ['Replied', m.replies], ['Meetings', m.meetings]].map(([t, n]) => `<div class="funnel-row"><span>${t}</span><div class="funnel-track"><i style="width:${n / (m.qualified || 1) * 100}%"></i></div><b>${n}</b></div>`).join('')}<p class="helper">${m.bounces} bounced · ${m.opt_outs} opted out · follow-up enrollments: ${esc(Object.entries(m.enrollments).map(([k, v]) => `${v} ${k}`).join(', ') || 'none')}</p></section></div>
+  <div class="spacer"></div>${activityPanel()}<div class="notice" style="margin-top:20px">${icon('shield')}${esc(m.definitions.sent)} Replies, bounces, opt-outs, and meetings are recorded by you; opens and deliveries are not tracked.</div>`;
+}
+async function campaignAction(a) {
+  try { S.c = await Api.post(`/api/campaigns/${S.cid}/${a}`); S.modal = null; await loadViewData(); await refreshSummary(); render(); toast({ pause: 'Campaign paused. Queued emails are blocked until you resume.', resume: 'Campaign resumed. Overdue follow-ups are held for your review.', stop: 'Campaign stopped.' }[a]); } catch (e) { fail(e); }
+}
+function activityPanel() {
+  return `<section class="panel"><div class="panel-header"><h2>Campaign activity</h2>${badge('Audit log')}</div>${S.events.map(e => `<div class="activity-row">${icon('check')}<div><strong style="font-weight:500">${esc(e.summary)}</strong><p>${esc(e.type)}</p></div><time>${fmtDate(e.created_at)}</time></div>`).join('') || '<p class="subtle">No activity yet.</p>'}</section>`;
+}
+
+// ---------- Send queue ----------
+async function loadTasks() {
+  const q = S.taskCampaign ? `&campaign_id=${S.taskCampaign}` : '';
+  [S.tasks] = await Promise.all([Api.get(`/api/send-tasks?status=${S.taskFilter}${q}`), refreshSummary()]);
+}
+function outboxView() {
+  const stopped = S.summary?.sending_stopped;
+  return `<div class="heading"><div><div class="eyebrow">SEND QUEUE</div><h1>Approved emails, ready for you to send.</h1><p>Send each email from your own mailbox, then confirm it here so follow-ups and reporting stay accurate.</p></div><button class="${stopped ? 'primary' : 'ghost'}" onclick="toggleSending(${!stopped})">${icon('pause')} ${stopped ? 'Resume all sending' : 'Stop all sending'}</button></div>
+  ${stopped ? `<div class="notice amber" style="margin-bottom:18px">${icon('shield')}Sending is stopped for the whole workspace. Tasks stay queued and cannot be confirmed until you resume.</div>` : ''}${tasksPanel()}`;
+}
+function tasksPanel() {
+  const T = S.tasks;
+  if (!T) return loadingPanel('Loading send queue…');
+  return `<div class="panel"><div class="tabs">${[['open', 'To send'], ['sent', 'Sent'], ['skipped', 'Skipped'], ['canceled', 'Canceled']].map(([k, n]) => `<button class="${S.taskFilter === k ? 'active' : ''}" onclick="S.taskFilter='${k}';loadTasks().then(render)">${n} ${badge(k === 'open' ? (T.counts.pending || 0) + (T.counts.held || 0) : T.counts[k] || 0)}</button>`).join('')}</div>
+  ${T.items.map(taskCard).join('') || `<div class="empty"><h3>${S.taskFilter === 'open' ? 'Nothing to send right now' : 'No tasks here'}</h3><p>${S.taskFilter === 'open' ? 'Approved emails for active campaigns appear here.' : ''}</p></div>`}</div>`;
+}
+function taskCard(t) {
+  const label = t.kind === 'initial' ? 'Initial email' : `Follow-up ${t.step_index + 1} · day ${t.day}`;
+  const state = t.status === 'held' ? badge('Held for review', 'amber') : t.blocked_reason ? badge('Blocked', 'amber') : t.status === 'pending' ? (t.due ? badge('Due now', 'green') : badge('Due ' + fmtDate(t.due_at))) : badge(t.status === 'sent' ? 'Sent · confirmed by you' : t.status, t.status === 'sent' ? 'green' : '');
+  const mail = `mailto:${encodeURIComponent(t.to_email)}?subject=${encodeURIComponent(t.subject)}&body=${encodeURIComponent(t.body)}`;
+  return `<article class="task-card"><div class="task-head"><span class="avatar">${initials(t.recipient)}</span><div class="grow"><strong>${esc(t.recipient)}</strong> <small class="subtle">${esc(t.company)} · ${esc(t.to_email)}</small><p class="subtle" style="margin:2px 0 0">${esc(label)} · ${esc(t.campaign_name)}</p></div>${state}</div>
+  <div class="task-body"><strong>${esc(t.subject)}</strong><pre>${esc(t.body)}</pre></div>
+  ${t.blocked_reason ? `<p class="helper">${icon('shield')} ${esc(t.blocked_reason)}</p>` : t.status_reason && t.status !== 'pending' ? `<p class="helper">${esc(t.status_reason)}</p>` : ''}
+  <div class="task-actions">${t.status === 'pending' ? `<a class="button small" href="${esc(mail)}">${icon('mail')} Open in email app</a><button class="small" onclick="copyTask('${esc(t.id)}')">${icon('copy')} Copy</button><button class="small primary" onclick="S.modal='confirm-sent';S.modalData='${esc(t.id)}';render()" ${t.blocked_reason ? 'disabled' : ''}>I sent this</button><button class="small ghost" onclick="skipTask('${esc(t.id)}')">Skip</button>`
+    : t.status === 'held' ? `<button class="small primary" onclick="releaseTask('${esc(t.id)}')" ${t.blocked_reason ? 'disabled' : ''}>Release for sending</button><button class="small ghost" onclick="skipTask('${esc(t.id)}')">Skip this step</button>`
+    : t.status === 'sent' ? `<span class="helper" style="margin:0">Sent ${fmtDate(t.sent_at)}</span><button class="small" onclick="S.modal='outcome';S.modalData={contact:'${esc(t.contact_id)}',campaign:'${esc(t.campaign_id)}',name:'${esc(t.recipient)}'};render()">Record reply or outcome</button>` : ''}</div></article>`;
+}
+async function copyTask(id) {
+  const t = S.tasks.items.find(x => x.id === id);
+  try { await navigator.clipboard.writeText(`To: ${t.to_email}\nSubject: ${t.subject}\n\n${t.body}`); toast('Copied. Copying does not mark it as sent.'); } catch { toast('Copy failed. Select the text manually.'); }
+}
+async function confirmSent(id) {
+  const v = $('sent-at')?.value;
+  try { await Api.post(`/api/send-tasks/${id}/confirm-sent`, { sent_at: v ? new Date(v).toISOString() : undefined }, { idem: 'sent-' + id }); S.modal = null; await loadTasks(); render(); toast('Marked as sent by you.'); } catch (e) { fail(e); }
+}
+async function skipTask(id) { try { await Api.post(`/api/send-tasks/${id}/skip`, { reason: 'Skipped by user' }); await loadTasks(); render(); } catch (e) { fail(e); } }
+async function releaseTask(id) { try { await Api.post(`/api/send-tasks/${id}/release`); await loadTasks(); render(); toast('Released. It is now due.'); } catch (e) { fail(e); } }
+async function toggleSending(stopped) { try { await Api.post('/api/workspace/sending', { stopped }); if (S.tasks) await loadTasks(); else await refreshSummary(); render(); toast(stopped ? 'All sending stopped.' : 'Sending resumed.'); } catch (e) { fail(e); } }
+async function recordOutcome() {
+  const d = S.modalData, type = $('outcome-type').value, note = $('outcome-note').value, at = $('outcome-at').value;
+  try { const r = await Api.post(`/api/contacts/${d.contact}/outcomes`, { type, campaign_id: d.campaign || null, note, occurred_at: at ? new Date(at).toISOString() : undefined }); S.modal = null; if (S.tasks) await loadTasks(); if (S.contacts) await loadContacts(); render(); toast(`Recorded.${r.stopped_enrollments ? ' Remaining follow-ups stopped.' : ''}${type === 'opt_out' || type === 'bounce' ? ' Address suppressed.' : ''}`); } catch (e) { fail(e); }
+}
+
+// ---------- Sequences ----------
+const launchedCampaigns = () => S.campaigns.filter(c => c.status !== 'draft');
+async function loadSequenceView() {
+  await refreshSummary();
+  const list = launchedCampaigns();
+  if (!list.length) { S.seq = null; return; }
+  if (!list.some(c => c.id === S.seqCampaign)) S.seqCampaign = (list.find(c => c.id === S.cid) || list[0]).id;
+  const [seq, leads] = await Promise.all([Api.get(`/api/campaigns/${S.seqCampaign}/sequence`), Api.get(`/api/campaigns/${S.seqCampaign}/leads?decision=all&selected=1&page_size=100`)]);
+  S.seq = seq; S.seqLeads = leads.items; S.seqActive = Math.min(S.seqActive, seq.steps.length - 1);
+}
+const personalize = (text, l) => text.replace(/\{\{\s*first_name\s*\}\}/g, l?.first_name || 'First name').replace(/\{\{\s*company\s*\}\}/g, l?.company || 'Company');
+function sequencePreview(step, l) { return `<strong>${esc(personalize(step.subject, l))}</strong><span style="white-space:pre-wrap">${esc(personalize(step.body, l))}</span>`; }
+function sequencesView() {
+  const list = launchedCampaigns();
+  if (!list.length) return `<div class="heading"><div><h1>Keep the conversation moving.</h1><p>Follow-ups for every campaign.</p></div></div><div class="panel empty"><div class="ai-mark">${icon('clock')}</div><h3>Launch your first campaign to get started</h3><p>Your initial email is day 0. Then build a follow-up sequence around it.</p><button class="primary" onclick="navigate('campaigns')">Go to campaigns</button></div>`;
+  const s = S.seq;
+  if (!s) return loadingPanel('Loading sequence…');
+  const c = list.find(x => x.id === S.seqCampaign), step = s.steps[S.seqActive], locked = s.status !== 'draft', person = S.seqLeads[Math.min(S.seqRecipient, S.seqLeads.length - 1)];
+  const enrolled = Object.entries(s.enrollments).map(([k, v]) => `${v} ${k}`).join(', ') || 'none yet';
+  return `<div class="heading"><div><div class="eyebrow">FOLLOW-UP STUDIO</div><h1>Keep the conversation moving.</h1><p>One campaign. A thoughtful sequence. Every follow-up in your voice.</p></div>${badge(s.status === 'draft' ? (s.current_version ? `Editing · v${s.current_version.version} paused` : 'Draft sequence') : s.status === 'paused' ? 'Paused' : `Active · v${s.current_version?.version}`, s.status === 'active' ? 'green' : s.status === 'paused' ? 'amber' : '')}</div>
+  <div class="panel" style="margin-bottom:22px"><div class="two-col"><div><label for="sequence-campaign">Campaign</label><select id="sequence-campaign" onchange="S.seqCampaign=this.value;S.seqActive=0;S.seqRecipient=0;loadSequenceView().then(render)">${list.map(x => `<option value="${esc(x.id)}" ${x.id === c.id ? 'selected' : ''}>${esc(x.name)}${x.status !== 'active' ? ` (${x.status})` : ''}</option>`).join('')}</select></div><div><label>Enrollment</label><div class="context-banner" style="margin:0">${icon('shield')}<span>Recipients enroll when you confirm their initial email was sent, unless they replied, bounced, or opted out. Enrolled: ${esc(enrolled)}.</span></div></div></div><p class="helper">Days are calendar-day offsets from each recipient’s confirmed initial send, in ${esc(c.config.schedule.timezone)}, moved to the next sending day and due at ${esc(c.config.schedule.time)}. Steps already overdue are held for your review rather than sent together. Recipients already enrolled keep the version they started with.</p></div>
+  <div class="sequence-layout"><aside class="panel sequence-timeline"><div class="panel-header"><h2>Your sequence</h2>${badge(plural(s.steps.length, 'email'))}</div><div class="sequence-origin">${icon('mail')}<div><strong>Day 0 · Initial email</strong><small>From your launched campaign</small></div></div>${s.steps.map((x, i) => `<button class="sequence-node ${i === S.seqActive ? 'active' : ''}" onclick="selectSeqStep(${i})"><span class="sequence-day">${esc(x.day)}<small>DAY</small></span><span class="grow"><strong>${esc(x.title)}</strong><small>${x.approved ? '✓ Approved' : 'Needs approval'}</small></span>${icon('chevron')}</button>`).join('')}<button class="stretch small" style="margin-top:18px" onclick="addSequenceStep()" ${locked || s.steps.length >= 8 ? 'disabled' : ''}>${icon('plus')} Add follow-up</button><div class="notice" style="margin-top:19px">${icon('shield')}A reply, bounce, opt-out, or meeting you record stops remaining follow-ups.</div></aside>
+  <section class="panel"><div class="panel-header"><div><h2>Follow-up ${S.seqActive + 1}</h2><p>Customize before approving. Approval covers this exact text and day.</p></div>${badge(step.approved ? 'Approved' : 'Draft', step.approved ? 'green' : '')}</div>
+  <div class="two-col"><div class="field"><label for="sequence-day">Days after initial email</label><input id="sequence-day" type="number" min="1" max="90" value="${esc(step.day)}" ${locked ? 'disabled' : ''} onchange="editSequence('day',Number(this.value))"></div><div class="field"><label for="sequence-tone">Start from a template</label><select id="sequence-tone" ${locked ? 'disabled' : ''} onchange="sequenceTemplate(this.value)"><option value="">Choose a template…</option><option>Conversational</option><option>Professional</option><option>Warm</option><option>Concise</option></select></div></div>
+  <div class="field"><label for="sequence-subject">Subject</label><input id="sequence-subject" value="${esc(step.subject)}" ${locked ? 'disabled' : ''} oninput="previewSequence('subject',this.value)" onchange="editSequence('subject',this.value)"></div>
+  <div class="field"><label for="sequence-body">Email</label><textarea id="sequence-body" style="min-height:245px" ${locked ? 'disabled' : ''} oninput="previewSequence('body',this.value)" onchange="editSequence('body',this.value)">${esc(step.body)}</textarea><p class="helper">Personalization fields: {{first_name}} and {{company}}.</p></div>
+  ${s.errors.length ? `<div class="notice amber">${icon('shield')}${esc(s.errors.join(' '))}</div>` : ''}
+  <div class="toolbar"><button class="small ghost" ${locked || s.steps.length === 1 ? 'disabled' : ''} onclick="removeSequenceStep()">Remove this step</button><button class="primary small" id="sequence-approve" ${locked ? 'disabled' : ''} onclick="approveSequenceStep()">${step.approved ? '✓ Approved' : 'Approve this email'}</button></div>
+  <div class="drawer-section"><div class="panel-header"><h2 style="font-size:14px">Recipient preview</h2><select aria-label="Sequence recipient preview" style="max-width:200px" onchange="S.seqRecipient=Number(this.value);$('sequence-preview').innerHTML=sequencePreview(S.seq.steps[S.seqActive],S.seqLeads[S.seqRecipient])">${S.seqLeads.map((l, i) => `<option value="${i}" ${l === person ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></div><div class="evidence-box" id="sequence-preview">${sequencePreview(step, person)}</div></div></section></div>
+  <div class="footer-actions"><span class="helper" id="sequence-count">${s.steps.filter(x => x.approved).length} of ${s.steps.length} follow-ups approved</span><div class="inline">${locked ? `<button onclick="sequenceAction('edit')">Edit sequence</button><button class="primary" onclick="sequenceAction('${s.status === 'active' ? 'pause' : 'resume'}')">${s.status === 'active' ? 'Pause' : 'Resume'}</button>` : `<button onclick="reviewSequenceBatch()">Review & approve all</button><button class="primary" onclick="launchSequence()">${s.current_version ? 'Relaunch sequence' : 'Launch sequence'} ${icon('arrow')}</button>`}</div></div>`;
+}
+async function selectSeqStep(i) { await seqSaveChain; S.seqActive = i; render(); }
+let seqSaveChain = Promise.resolve();
+function saveSteps(steps) {
+  seqSaveChain = seqSaveChain.then(async () => {
+    try { S.seq = await Api.patch(`/api/sequences/${S.seq.id}`, { revision: S.seq.revision, steps }); S.seqActive = Math.min(S.seqActive, S.seq.steps.length - 1); }
+    catch (e) { fail(e); await loadSequenceView(); }
+  });
+  return seqSaveChain;
+}
+function previewSequence(k, v) { const step = { ...S.seq.steps[S.seqActive], [k]: v }; $('sequence-preview').innerHTML = sequencePreview(step, S.seqLeads[S.seqRecipient]); }
+async function editSequence(k, v) {
+  const steps = S.seq.steps.map(({ approved, ...x }) => x);
+  steps[S.seqActive][k] = v;
+  await saveSteps(steps);
+  const b = $('sequence-approve'); if (b) b.textContent = S.seq.steps[S.seqActive].approved ? '✓ Approved' : 'Approve this email';
+  const n = $('sequence-count'); if (n) n.textContent = `${S.seq.steps.filter(x => x.approved).length} of ${S.seq.steps.length} follow-ups approved`;
+  if (k === 'day' || S.seq.errors.length) render();
+}
+async function addSequenceStep() {
+  const steps = S.seq.steps.map(({ approved, ...x }) => x), last = steps.at(-1);
+  if (last.day + 2 > 90) return toast('Sequence cannot extend past day 90.');
+  const sig = launchedCampaigns().find(c => c.id === S.seqCampaign) ? S.context.data.signature : '';
+  steps.push({ day: last.day + 2, title: 'Follow-up email', subject: 'A quick follow-up for {{company}}', body: `Hi {{first_name}},\n\nJust checking back in on my earlier note.\n\n${sig}` });
+  S.seqActive = steps.length - 1; await saveSteps(steps); render();
+}
+async function removeSequenceStep() { const steps = S.seq.steps.map(({ approved, ...x }) => x); steps.splice(S.seqActive, 1); S.seqActive = Math.max(0, S.seqActive - 1); await saveSteps(steps); render(); }
+function sequenceTemplate(tone) {
+  if (!tone) return;
+  const offer = S.c?.id === S.seqCampaign ? S.c.config.offer : S.campaigns.find(c => c.id === S.seqCampaign)?.config.offer || '', sig = S.context.data.signature;
+  const body = tone === 'Concise' ? `Hi {{first_name}},\n\nIs this relevant for {{company}} right now? Happy to share more if useful.\n\n${sig}` : tone === 'Professional' ? `Hello {{first_name}},\n\nI am following up on my earlier introduction. ${offer}\n\nWould you be available to discuss whether this would be relevant for {{company}}?\n\n${sig}` : `Hi {{first_name}},\n\nJust checking back in. ${offer}\n\nIs this on the radar at {{company}}? ${tone === 'Warm' ? 'No worries at all if now isn’t the right time.' : 'Happy to send a quick overview if useful.'}\n\n${sig}`;
+  editSequence('body', body).then(render);
+}
+async function approveSequenceStep() {
+  await seqSaveChain;
+  if (S.seq.errors.length) return toast(S.seq.errors[0]);
+  try { S.seq = await Api.post(`/api/sequences/${S.seq.id}/approvals`, { revision: S.seq.revision, steps: [S.seqActive] }); render(); toast('Follow-up approved.'); } catch (e) { fail(e); }
+}
+async function reviewSequenceBatch() { await seqSaveChain; if (S.seq.errors.length) return toast(S.seq.errors[0]); S.modal = 'sequence-bulk'; render(); }
+async function approveSequenceBatch() {
+  if (!$('sequence-bulk-check').checked) return toast('Confirm you reviewed the sequence.');
+  try { S.seq = await Api.post(`/api/sequences/${S.seq.id}/approvals`, { revision: S.seq.revision, steps: 'all', confirm: true }); S.modal = null; render(); toast('All follow-ups approved. You can now launch.'); } catch (e) { fail(e); }
+}
+async function launchSequence() {
+  await seqSaveChain;
+  try { S.seq = await Api.post(`/api/sequences/${S.seq.id}/launch`, { revision: S.seq.revision }, { idem: Api.key() }); await refreshSummary(); render(); toast(`Sequence launched. ${S.seq.enrollments.active || 0} recipients enrolled; follow-ups appear in your send queue when due.`); } catch (e) { fail(e); }
+}
+async function sequenceAction(a) {
+  try { S.seq = await Api.post(`/api/sequences/${S.seq.id}/${a}`); render(); toast({ edit: 'Editing. Follow-ups pause until you re-approve and relaunch.', pause: 'Sequence paused.', resume: 'Sequence resumed. Overdue steps are held for review.' }[a]); } catch (e) { fail(e); }
+}
+
+// ---------- Contacts, imports, suppression ----------
+async function loadContacts() {
+  const [contacts, imports, sup] = await Promise.all([Api.get(`/api/contacts?q=${encodeURIComponent(S.cq)}&page=${S.cpage}&page_size=15`), Api.get('/api/imports'), Api.get('/api/suppressions')]);
+  Object.assign(S, { contacts, imports: imports.items, suppressions: sup.items });
+}
+function contactsView() {
+  const C = S.contacts, last = S.lastImport;
+  return `<div class="heading"><div><div class="eyebrow">CONTACTS</div><h1>Your people, in one place.</h1><p>Import prospects, see where they’re used, and manage who must never be contacted.</p></div></div>
+  <div class="wizard-grid"><div class="stack"><section class="panel"><div class="panel-header"><div><h2>Import contacts</h2><p>CSV with a header row. Required: first name (or name), company, and an email or LinkedIn URL.</p></div>${icon('download')}</div>
+    <div class="inline"><label class="button primary small" for="csv-file" style="margin:0">${icon('download')} Choose CSV file</label><input id="csv-file" type="file" accept=".csv,text/csv" style="display:none" onchange="importFile(this)"><select id="csv-source" aria-label="Import source" style="max-width:240px"><option value="csv">CRM or provider export</option><option value="salesnav_export">Sales Navigator export</option></select><button class="small ghost" onclick="importSample()">Load fictional sample contacts</button></div>
+    <p class="helper">Optional columns: last_name, title, email_status (valid, invalid, catch-all, unknown — from your verification provider), domain, industry, employees, location, linkedin_url, relationship (customer, competitor, agency, opportunity), signal (Hiring, Funding, New leadership, Expansion), signal_fact, signal_date (YYYY-MM-DD), signal_url. Re-importing updates existing people instead of duplicating them.</p>
+    ${last ? `<div class="notice ${last.rejected.some(r => !r.partial) ? 'amber' : ''}">${icon('check')}<span><strong>${esc(last.filename)}</strong>: ${last.created_count} new, ${last.updated_count} updated, ${last.rejected.filter(r => !r.partial).length} rejected.${last.rejected.length ? '<br>' + last.rejected.slice(0, 8).map(r => `Line ${r.line}: ${esc(r.reason)}`).join('<br>') + (last.rejected.length > 8 ? `<br>…and ${last.rejected.length - 8} more` : '') : ''}</span></div>` : ''}</section>
+  <section class="panel"><div class="panel-header"><div><h2>All contacts</h2><p>${C ? plural(C.total, 'contact') : ''}</p></div></div><div class="toolbar"><div class="search">${icon('search')}<input id="contact-search" aria-label="Search contacts" placeholder="Search people, companies, or emails" value="${esc(S.cq)}" oninput="S.cq=this.value;S.cpage=0;clearTimeout(window._cs);window._cs=setTimeout(()=>loadContacts().then(()=>{render();const i=$('contact-search');i.focus();i.setSelectionRange(i.value.length,i.value.length)}),300)"></div></div>
+  ${!C ? loadingPanel() : `<div class="table-wrap"><table><thead><tr><th>Person</th><th>Company</th><th>Email</th><th>Campaigns</th><th></th></tr></thead><tbody>${C.items.map(x => `<tr><td><div class="person"><span class="avatar">${initials(x.first_name + ' ' + x.last_name)}</span><div><strong>${esc(x.first_name)} ${esc(x.last_name)}</strong><small>${esc(x.role)}</small></div></div></td><td>${esc(x.company)}<small>${esc([x.industry, x.location].filter(Boolean).join(' · '))}</small></td><td>${esc(x.email || '—')}<small>${x.suppressed ? badge('Suppressed: ' + x.suppressed, 'red') : emailBadge(x.email_status)}</small></td><td><small>${esc(x.campaigns || '—')}${x.last_outcome ? ' · last: ' + esc(x.last_outcome) : ''}</small></td><td><button class="small ghost" onclick="S.modal='outcome';S.modalData={contact:'${esc(x.id)}',name:'${esc(x.first_name)} ${esc(x.last_name)}'};render()">Record outcome</button></td></tr>`).join('') || '<tr><td colspan="5">No contacts yet. Import a CSV to get started.</td></tr>'}</tbody></table></div>
+  <div class="table-bottom"><span>${C.total ? `${S.cpage * 15 + 1}–${Math.min(S.cpage * 15 + 15, C.total)} of ${C.total}` : ''}</span><div class="inline"><button class="small ghost" ${S.cpage === 0 ? 'disabled' : ''} onclick="S.cpage--;loadContacts().then(render)">← Previous</button><button class="small ghost" ${(S.cpage + 1) * 15 >= C.total ? 'disabled' : ''} onclick="S.cpage++;loadContacts().then(render)">Next →</button></div></div>`}</section></div>
+  <aside class="wizard-aside stack"><section class="panel"><h2 style="font-size:14px">Do not contact</h2><p class="subtle">Opt-outs and bounces are added automatically and stay permanent. Add addresses manually here.</p><div class="inline"><input id="sup-email" aria-label="Email to suppress" placeholder="name@company.com"><button class="small" onclick="addSuppression()">Add</button></div>${S.suppressions.map(s => `<div class="summary-row"><small>${esc(s.reason.replace('_', '-'))} · ${fmtDay(s.created_at)}</small><p>${esc(s.email)} ${s.reason === 'manual' ? `<button class="small ghost" onclick="removeSuppression('${esc(s.id)}')">Remove</button>` : ''}</p></div>`).join('') || '<p class="helper">No suppressed addresses.</p>'}</section>
+  <section class="panel"><h2 style="font-size:14px">Recent imports</h2>${S.imports.map(i => `<div class="summary-row"><small>${fmtDate(i.created_at)} · ${i.source === 'salesnav_export' ? 'Sales Navigator export' : 'CSV'}</small><p>${esc(i.filename)}: ${i.created_count} new, ${i.updated_count} updated, ${i.rejected.filter(r => !r.partial).length} rejected</p></div>`).join('') || '<p class="helper">No imports yet.</p>'}</section></aside></div>`;
+}
+async function importCsvText(filename, csv, source) {
+  try { S.lastImport = await Api.post('/api/imports', { filename, csv, source }, { idem: Api.key() }); S.cpage = 0; await loadContacts(); render(); toast(`Imported ${filename}.`); } catch (e) { fail(e); }
+}
+function importFile(input) {
+  const f = input.files[0]; if (!f) return;
+  if (f.size > 5_000_000) return toast('CSV files are limited to 5 MB.');
+  const r = new FileReader();
+  r.onload = () => importCsvText(f.name, String(r.result), $('csv-source').value);
+  r.onerror = () => toast('Could not read that file.');
+  r.readAsText(f);
+}
+async function importSample() {
+  try { const res = await fetch('/sample-contacts.csv'); importCsvText('sample-contacts.csv (fictional)', await res.text(), 'csv'); } catch { toast('Could not load the sample.'); }
+}
+async function addSuppression() { const email = $('sup-email').value.trim(); if (!email) return; try { await Api.post('/api/suppressions', { email }); await loadContacts(); render(); toast('Address suppressed.'); } catch (e) { fail(e); } }
+async function removeSuppression(id) { try { await Api.del(`/api/suppressions/${id}`); await loadContacts(); render(); } catch (e) { fail(e); } }
+
+// ---------- Company context ----------
+function accountView() {
+  const a = S.context.data, f = S.contextErrors || {};
+  const fieldA = (label, k, multi = false) => `<div class="field"><label for="a-${k}">${label}</label>${multi ? `<textarea id="a-${k}">${esc(a[k])}</textarea>` : `<input id="a-${k}" value="${esc(a[k])}">`}${f[k] ? `<p class="helper" style="color:var(--red)">${esc(f[k])}</p>` : ''}</div>`;
+  return `<div class="heading"><div><div class="eyebrow">WORKSPACE SETTINGS</div><h1>The context behind every conversation.</h1><p>Tell your assistant who you are, who you help, and how you sound.</p></div><button class="primary" onclick="saveAccount()">Save company context</button></div><div class="wizard-grid"><div class="stack"><section class="panel"><div class="panel-header"><h2>Company & offering</h2>${badge('Version ' + S.context.version)}</div>${fieldA('Company name', 'company')}${fieldA('Website', 'website')}${fieldA('What do you offer?', 'offering', true)}${fieldA('Ideal customer profile', 'icp', true)}${fieldA('Approved proof points', 'proof', true)}${fieldA('Exclude from outreach (descriptions, company names, or domains)', 'exclusions', true)}</section>
+  <section class="panel"><div class="panel-header"><h2>Sender identity</h2>${badge('Manual sending')}</div><div class="two-col">${fieldA('Sender name', 'sender')}${fieldA('Email address', 'email')}</div>${fieldA('Signature', 'signature', true)}<div class="field"><label for="a-tone">Default tone</label><select id="a-tone">${['Conversational', 'Professional', 'Warm'].map(x => `<option ${a.tone === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div><div class="notice">${icon('shield')}This is the identity used in drafts. No mailbox is connected and no credentials are requested; you send from your own email app.</div></section></div>
+  <aside class="wizard-aside panel"><h2>One source of context</h2><div class="timeline"><div class="timeline-item"><span class="time-dot">1</span><div><strong>Qualify the right people</strong><p>Audience, offering, and exclusions guide fit.</p></div></div><div class="timeline-item"><span class="time-dot">2</span><div><strong>Write in your voice</strong><p>Your tone and proof points shape the draft.</p></div></div><div class="timeline-item"><span class="time-dot">3</span><div><strong>Add campaign intent</strong><p>A chat brief adds context to each new campaign.</p></div></div></div><p class="helper">Each save creates a new version. Campaigns keep the version they were created with until you choose to update them, so approved emails never change silently.</p></aside></div>`;
+}
+async function saveAccount() {
+  const data = {};
+  for (const k of Object.keys(S.context.data)) { const el = $('a-' + k); data[k] = el ? el.value.trim() : S.context.data[k]; }
+  try { S.context = await Api.patch('/api/account-context', { version: S.context.version, data }); S.contextErrors = null; render(); toast(`Company context saved (version ${S.context.version}).`); }
+  catch (e) {
+    if (e.status === 422) { S.contextErrors = e.fields; S.context = { ...S.context, data }; render(); toast(e.message); }
+    else if (e.status === 409) { toast('Company context changed elsewhere. Reloaded the latest version; reapply your edits.'); S.context = e.body.current; render(); }
+    else fail(e);
+  }
+}
+
+// ---------- Overlays ----------
+function overlay() {
+  if (!S.modal) return '';
+  const close = `<button class="icon-btn ghost" aria-label="Close" onclick="closeOverlay()">${icon('close')}</button>`;
+  const modal = (label, inner) => `<div class="modal-wrap"><section class="modal" role="dialog" aria-modal="true" aria-label="${esc(label)}">${inner}</section></div>`;
+  if (S.modal === 'lead') {
+    const l = S.leads?.items.find(x => x.id === S.leadId); if (!l) return '';
+    return `<div class="overlay" onclick="if(event.target===this)closeOverlay()"><section class="drawer" role="dialog" aria-modal="true" aria-label="Lead qualification"><div class="drawer-header"><span class="eyebrow">LEAD INTELLIGENCE</span>${close}</div><div class="inline"><span class="avatar" style="height:52px;width:52px;font-size:15px">${initials(l.name)}</span><div><h2>${esc(l.name)}</h2><p class="subtle" style="margin:6px 0">${esc(l.role)} · ${esc(l.company)}</p></div></div><div class="spacer"></div>${badge(l.decision === 'qualified' ? 'Qualified' : l.decision === 'review' ? 'Needs review' : 'Excluded', l.decision === 'qualified' ? 'green' : 'amber')} <span class="score" style="margin-left:10px">${l.score}/100 fit · ${esc(l.confidence)} confidence</span>
+    <div class="drawer-section" style="margin-top:25px"><h3>Why this person?</h3><p class="subtle">${esc(l.rationale)}</p>${l.override_reason ? `<p class="helper">Your note: ${esc(l.override_reason)}</p>` : ''}${l.evidence.map(e => `<div class="evidence-item"><strong>${esc(e.signal || 'Evidence')}</strong><p>${esc(e.fact)}</p><small>${e.event_date ? 'Event ' + esc(e.event_date) + ' · ' : 'Event date unknown · '}${e.source_url ? `<a href="${esc(e.source_url)}" target="_blank" rel="noopener noreferrer">source</a> · ` : ''}collected ${fmtDay(e.collected_at)}</small></div>`).join('') || '<p class="helper">No signal evidence on file.</p>'}</div>
+    <div class="drawer-section"><h3>Qualification checks</h3>${l.checks.map(x => `<div class="summary-row"><small>${x.status === 'pass' ? '✓' : x.status === 'fail' ? '✕' : '?'} ${esc(x.label)}</small><p>${esc(x.detail)}</p></div>`).join('')}<div class="summary-row"><small>Email</small><p>${esc(l.email || 'Not found')} ${emailBadge(l.email_status)}</p></div><p class="helper">Assessed by ${esc(l.assessed_by.replace('rules+', 'rules + '))}.</p></div>
+    ${l.decision === 'review' && !l.checks.some(x => x.status === 'fail') && l.email ? `<div class="drawer-section"><h3>Qualify after review</h3><textarea id="qualify-reason" placeholder="Why does this person qualify? e.g. email verified separately"></textarea><button class="stretch primary" style="margin-top:10px" onclick="qualifyLead('${esc(l.id)}')">Mark as qualified</button></div>` : ''}
+    ${l.decision !== 'excluded' && l.send_status !== 'sent' ? `<button class="stretch" onclick="excludeLead('${esc(l.id)}')">Exclude from this campaign</button>` : ''}</section></div>`;
+  }
+  if (S.modal === 'bulk') {
+    const items = S.drafts.items.filter(x => x.draft);
+    return modal('Approve campaign emails', `<div class="panel-header"><h2>Review your email batch</h2>${close}</div><p>${items.length} drafts for ${S.drafts.total} prospects. Approval applies to this exact wording; anything edited later needs fresh approval.</p><div class="approval-summary">${items.map(x => `<article class="approval-item"><h4>${esc(x.lead.name)} · ${esc(x.lead.company)} ${x.draft.approved ? '✓' : ''}</h4><strong style="font-size:12px">${esc(x.draft.subject)}</strong><pre>${esc(x.draft.body)}</pre>${x.draft.review_note ? `<p class="helper">${esc(x.draft.review_note)}</p>` : ''}</article>`).join('')}</div><label class="inline"><input id="bulk-check" type="checkbox">I have reviewed these emails.</label><div class="modal-actions"><button onclick="closeOverlay()">Keep editing</button><button class="primary" onclick="approveAll()">Approve all emails</button></div>`);
+  }
+  if (S.modal === 'regen') return modal('Change writing settings', `<div class="panel-header"><h2>Rewrite drafts?</h2>${close}</div><p>Changing ${esc(S.modalData.key)} to “${esc(S.modalData.value)}” writes new drafts for ${plural(S.modalData.n, 'recipient')} who haven’t been emailed. Their current approvals will no longer apply. Earlier versions are kept in history.</p><div class="modal-actions"><button onclick="closeOverlay();render()">Cancel</button><button class="primary" onclick="confirmWriting()">Rewrite drafts</button></div>`);
+  if (S.modal === 'stop') return modal('Stop campaign', `<div class="panel-header"><h2>Stop this campaign?</h2>${close}</div><p>Stopping cancels queued emails and follow-ups and ends daily discovery. History is kept. This cannot be undone; pause instead if you may continue later.</p><div class="modal-actions"><button onclick="closeOverlay()">Cancel</button><button class="primary" onclick="campaignAction('stop')">Stop campaign</button></div>`);
+  if (S.modal === 'confirm-sent') {
+    const t = S.tasks.items.find(x => x.id === S.modalData), local = new Date(Date.now() - new Date().getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
+    return modal('Confirm sent', `<div class="panel-header"><h2>Confirm you sent this email</h2>${close}</div><p>${esc(t.subject)} → ${esc(t.recipient)} &lt;${esc(t.to_email)}&gt;</p><div class="field"><label for="sent-at">When did you send it?</label><input id="sent-at" type="datetime-local" value="${local}" max="${local}"></div><p class="helper">Follow-up timing is measured from this time. This is recorded as confirmed by you, not verified by a mail provider.</p><div class="modal-actions"><button onclick="closeOverlay()">Cancel</button><button class="primary" onclick="confirmSent('${esc(t.id)}')">Mark as sent</button></div>`);
+  }
+  if (S.modal === 'outcome') {
+    const local = new Date(Date.now() - new Date().getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
+    return modal('Record outcome', `<div class="panel-header"><h2>Record an outcome for ${esc(S.modalData.name)}</h2>${close}</div><div class="field"><label for="outcome-type">What happened?</label><select id="outcome-type"><option value="reply">They replied</option><option value="meeting">Meeting booked</option><option value="bounce">Email bounced</option><option value="opt_out">They asked not to be contacted</option></select></div><div class="field"><label for="outcome-at">When?</label><input id="outcome-at" type="datetime-local" value="${local}" max="${local}"></div><div class="field"><label for="outcome-note">Note (optional)</label><textarea id="outcome-note"></textarea></div><p class="helper">Any outcome stops this person’s remaining follow-ups. Bounces and opt-outs also suppress the address everywhere.</p><div class="modal-actions"><button onclick="closeOverlay()">Cancel</button><button class="primary" onclick="recordOutcome()">Record</button></div>`);
+  }
+  if (S.modal === 'sequence-bulk') {
+    const s = S.seq, l = S.seqLeads[S.seqRecipient];
+    return modal('Approve follow-up sequence', `<div class="panel-header"><h2>Review your follow-up sequence</h2>${close}</div><p>Day offsets are measured from each recipient’s confirmed first email. Preview for ${esc(l?.name || 'a recipient')}.</p><div class="approval-summary">${s.steps.map(x => `<article class="approval-item"><h4>Day ${esc(x.day)} · ${esc(x.title)}</h4>${sequencePreview(x, l)}</article>`).join('')}</div><label class="inline"><input id="sequence-bulk-check" type="checkbox">I reviewed all follow-up emails and their timing.</label><div class="modal-actions"><button onclick="closeOverlay()">Keep editing</button><button class="primary" onclick="approveSequenceBatch()">Approve all follow-ups</button></div>`);
+  }
+  return '';
+}
+function closeOverlay() { S.modal = null; S.modalData = null; render(); }
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && S.modal) closeOverlay();
+  if (e.key === 'Tab' && S.modal) { const controls = [...document.querySelectorAll('[role=dialog] button,[role=dialog] input,[role=dialog] select,[role=dialog] textarea,[role=dialog] a')]; if (e.shiftKey && document.activeElement === controls[0]) { e.preventDefault(); controls.at(-1)?.focus(); } else if (!e.shiftKey && document.activeElement === controls.at(-1)) { e.preventDefault(); controls[0]?.focus(); } }
+});
+window.addEventListener('beforeunload', e => { if (pendingSave) { flushSave(); e.preventDefault(); } });
+
+
+
+// ---------- Sign-in ----------
+const GOOGLE_ERRORS = { google_cancelled: 'Google sign-in was cancelled.', google_state: 'That Google sign-in link expired. Try again.', google_exchange: 'Google sign-in failed. Try again.', google_token: 'Google sign-in could not be verified. Try again.', google_unverified: 'Your Google account email is not verified.', google_conflict: 'This email is linked to a different Google account.' };
+function googleError(h) { const code = (h.match(/error=(\w+)/) || [])[1]; return code ? GOOGLE_ERRORS[code] || 'Sign-in failed. Try again.' : ''; }
+async function authConfig() { try { return await Api.get('/api/auth/config'); } catch { return { google: false, password: true }; } }
+async function showAuth(view, extra = {}) {
+  clearTimeout(pollTimer);
+  S.auth = { view, error: '', fields: {}, busy: false, email: S.auth?.email || '', ...S.auth && { config: S.auth.config, invite: S.auth.invite, token: S.auth.token }, ...extra };
+  S.auth.config ??= await authConfig();
+  S.modal = null; S.loading = false;
+  if (['signin', 'signup', 'forgot'].includes(view) && !S.auth.invite) setHash('#/' + (view === 'forgot' ? 'signin' : view));
+  render();
+}
+// Handles links from emails (#/verify, #/reset, #/invite). Returns true when it took over boot.
+async function handleAuthLink() {
+  const h = String(location.hash || ''), m = h.match(/^#\/(verify|reset|invite)\/([\w-]+)/);
+  if (!m) return false;
+  const [, kind, token] = m;
+  if (kind === 'verify') {
+    try { await Api.post('/api/auth/verify-email', { token }); setHash('#/'); toast('Email confirmed. Welcome!'); return false; }
+    catch (e) { setHash('#/signin'); await showAuth('signin', { error: e.message }); return true; }
+  }
+  if (kind === 'reset') { await showAuth('reset', { token }); return true; }
+  try {
+    const invite = await Api.post('/api/auth/invite-preview', { token });
+    let session = null; try { session = await Api.get('/api/session'); } catch { /* signed out */ }
+    await showAuth(session ? 'invite' : invite.account_exists ? 'signin' : 'signup', { token, invite, session, email: invite.email });
+  } catch (e) { setHash('#/'); await showAuth('signin', { error: e.message }); }
+  return true;
+}
+function authField(label, id, type, auto, value = '') {
+  const err = S.auth.fields?.[id];
+  return `<div class="field"><label for="auth-${id}">${label}</label><input id="auth-${id}" type="${type}" autocomplete="${auto}" value="${esc(value)}" ${err ? 'aria-invalid="true"' : ''}>${err ? `<p class="helper" style="color:var(--red)">${esc(err)}</p>` : ''}</div>`;
+}
+function authView() {
+  const a = S.auth, inv = a.invite, google = a.config?.google;
+  const googleBtn = google ? `<a class="button stretch google-btn" href="/auth/google/start${inv ? `?invite=${encodeURIComponent(a.token)}` : ''}"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8Z"/><path fill="#34A853" d="M12 24c3.2 0 6-1.1 8-2.9l-3.9-3c-1.1.7-2.5 1.2-4.1 1.2-3.1 0-5.8-2.1-6.7-5H1.3v3.1A12 12 0 0 0 12 24Z"/><path fill="#FBBC05" d="M5.3 14.3a7.2 7.2 0 0 1 0-4.6V6.6h-4a12 12 0 0 0 0 10.8l4-3.1Z"/><path fill="#EA4335" d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.3 6.6l4 3.1c.9-2.9 3.6-4.9 6.7-4.9Z"/></svg> Continue with Google</a><div class="auth-divider"><span>or</span></div>` : '';
+  const banner = inv ? `<div class="context-banner">${icon('people')}<div><strong>${esc(inv.inviter || 'A teammate')} invited you to ${esc(inv.workspace)}</strong><p>Invitation for ${esc(inv.email)}.</p></div></div>` : '';
+  const err = a.error ? `<div class="error" role="alert">${esc(a.error)}${a.unverified ? ` <button class="small" onclick="resendVerification()">Send a new link</button>` : ''}</div>` : '';
+  const busy = a.busy ? 'disabled' : '';
+  const card = inner => `<div class="auth-wrap"><div class="auth-brand"><span class="logo">↗</span>outbound<span style="color:#7fb24a">.</span></div><section class="panel auth-card">${inner}</section><p class="helper auth-foot">${icon('shield')} Your outreach is sent from your own mailbox. We never ask for your email password.</p></div>`;
+  if (a.view === 'check') return card(`<div class="empty" style="padding:8px 0"><div class="ai-mark">${icon('mail')}</div><h2>Check your email</h2><p>${esc(a.message || 'If an account matches, we’ve sent you a link.')}</p><p class="helper">Didn’t get it? Check spam, or wait a minute and try again.</p><button class="stretch" onclick="showAuth('signin')">Back to sign in</button></div>`);
+  if (a.view === 'reset') return card(`<h2>Choose a new password</h2><p class="subtle">At least 10 characters. Signing in elsewhere will end.</p>${err}<form onsubmit="event.preventDefault();resetPassword()">${authField('New password', 'password', 'password', 'new-password')}${authField('Confirm password', 'confirm', 'password', 'new-password')}<button class="primary stretch" ${busy}>Save password and sign in</button></form>`);
+  if (a.view === 'forgot') return card(`<h2>Reset your password</h2><p class="subtle">We’ll email you a link to choose a new one.</p>${err}<form onsubmit="event.preventDefault();forgotPassword()">${authField('Email', 'email', 'email', 'email', a.email)}<button class="primary stretch" ${busy}>Send reset link</button></form><p class="auth-switch"><button class="ghost small" onclick="showAuth('signin')">Back to sign in</button></p>`);
+  if (a.view === 'invite') {
+    const mine = a.session?.user.email.toLowerCase() === inv.email.toLowerCase();
+    return card(`${banner}${err}${mine ? `<p>You’re signed in as ${esc(a.session.user.email)}.</p><button class="primary stretch" onclick="acceptInvite()" ${busy}>Join ${esc(inv.workspace)}</button>` : `<p>You’re signed in as ${esc(a.session.user.email)}, but this invitation is for ${esc(inv.email)}.</p><button class="primary stretch" onclick="signOut(true)">Sign out and switch account</button>`}<p class="auth-switch"><button class="ghost small" onclick="S.auth=null;setHash('#/');boot()">Not now</button></p>`);
+  }
+  if (a.view === 'signup') return card(`${banner}<h2>${inv ? 'Create your account' : 'Create your workspace'}</h2><p class="subtle">${inv ? 'Join your team on Outbound.' : 'Find the right people and give them a reason to reply.'}</p>${err}${googleBtn}<form onsubmit="event.preventDefault();signUp()">${authField('Your name', 'name', 'text', 'name', a.name)}${inv ? '' : authField('Company', 'company', 'text', 'organization', a.company)}${authField('Work email', 'email', 'email', 'email', a.email)}${authField('Password', 'password', 'password', 'new-password')}<p class="helper" style="margin-top:-8px">At least 10 characters.</p><button class="primary stretch" ${busy}>${inv ? 'Create account and join' : 'Create account'}</button></form><p class="auth-switch">Already have an account? <button class="ghost small" onclick="showAuth('signin')">Sign in</button></p>`);
+  return card(`${banner}<h2>${inv ? 'Sign in to accept' : 'Welcome back'}</h2><p class="subtle">Sign in to your outbound workspace.</p>${err}${googleBtn}<form onsubmit="event.preventDefault();signIn()">${authField('Email', 'email', 'email', 'email', a.email)}${authField('Password', 'password', 'password', 'current-password')}<div class="auth-row"><button type="button" class="ghost small" onclick="showAuth('forgot',{email:$('auth-email').value})">Forgot password?</button></div><button class="primary stretch" ${busy}>Sign in</button></form><p class="auth-switch">New here? <button class="ghost small" onclick="showAuth('signup')">Create an account</button></p>${google ? '<p class="helper" style="text-align:center">Signed up with Google? Use “Continue with Google”.</p>' : ''}`);
+}
+async function authSubmit(fn) {
+  const a = S.auth; a.busy = true; a.error = ''; a.fields = {}; a.unverified = false; render();
+  try { await fn(); }
+  catch (e) { a.error = e.message; a.fields = e.fields || {}; a.unverified = e.code === 'email_unverified'; }
+  a.busy = false; if (S.auth) render();
+}
+async function afterSignIn() {
+  const inv = S.auth?.invite, token = S.auth?.token;
+  if (inv) { try { await Api.post('/api/auth/accept-invite', { token }); toast(`You joined ${inv.workspace}.`); } catch (e) { toast(e.message); } }
+  S.auth = null; S.loading = true; setHash('#/'); render(); boot();
+}
+// Read every field before authSubmit re-renders the form (re-rendering replaces the inputs).
+const val = id => $('auth-' + id)?.value ?? '';
+function signIn() {
+  const email = val('email'), password = val('password');
+  S.auth.email = email;
+  return authSubmit(async () => { await Api.post('/api/auth/login', { email, password }); await afterSignIn(); });
+}
+function signUp() {
+  const f = { name: val('name'), company: val('company'), email: val('email'), password: val('password') };
+  Object.assign(S.auth, { name: f.name, company: f.company, email: f.email });
+  return authSubmit(async () => {
+    const r = await Api.post('/api/auth/signup', { ...f, invite_token: S.auth.invite ? S.auth.token : undefined });
+    if (r.status === 'signed_in') return afterSignIn();
+    Object.assign(S.auth, { view: 'check', message: `We sent a confirmation link to ${f.email}. Open it to finish creating your account.` });
+  });
+}
+function forgotPassword() {
+  const email = val('email');
+  S.auth.email = email;
+  return authSubmit(async () => { await Api.post('/api/auth/forgot-password', { email }); Object.assign(S.auth, { view: 'check', message: `If an account exists for ${email}, we sent a link to reset its password. It expires in one hour.` }); });
+}
+function resetPassword() {
+  const password = val('password');
+  if (password !== val('confirm')) { S.auth.error = 'The passwords don’t match.'; return render(); }
+  return authSubmit(async () => { await Api.post('/api/auth/reset-password', { token: S.auth.token, password }); toast('Password updated.'); await afterSignIn(); });
+}
+async function resendVerification() {
+  try { await Api.post('/api/auth/resend-verification', { email: S.auth.email }); Object.assign(S.auth, { view: 'check', message: `If ${S.auth.email} still needs confirming, we sent a new link.` }); render(); } catch (e) { S.auth.error = e.message; render(); }
+}
+function acceptInvite() { return authSubmit(async () => { await afterSignIn(); }); }
+async function signOut(keepInvite) {
+  try { await Api.post('/api/auth/logout'); } catch { /* already signed out */ }
+  const keep = keepInvite && S.auth?.invite ? { invite: S.auth.invite, token: S.auth.token, email: S.auth.invite.email } : {};
+  Object.assign(S, { session: null, c: null, cid: null, campaigns: [], view: 'home' });
+  S.auth = keep.invite ? { config: S.auth.config, ...keep } : null;
+  await showAuth(keep.invite ? (keep.invite.account_exists ? 'signin' : 'signup') : 'signin', keep);
+}
+async function switchWorkspace(id) {
+  try { await Api.post('/api/auth/switch-workspace', { workspace_id: id }); Object.assign(S, { c: null, cid: null, view: 'home', loading: true }); setHash('#/'); render(); boot(); } catch (e) { fail(e); }
+}
+
+// ---------- Team & account ----------
+function teamView() {
+  const u = S.session.user, T = S.team, owner = u.role === 'owner', f = S.pwErrors || {};
+  return `<div class="heading"><div><div class="eyebrow">TEAM & ACCOUNT</div><h1>Who’s in ${esc(S.session.workspace.name)}.</h1><p>Invite teammates and manage how you sign in.</p></div></div>
+  <div class="wizard-grid"><div class="stack"><section class="panel"><div class="panel-header"><div><h2>Team members</h2><p>${T ? plural(T.members.length, 'member') : ''}</p></div>${badge(owner ? 'You’re an owner' : 'You’re a member')}</div>
+  ${!T ? loadingPanel() : `<div class="table-wrap"><table><thead><tr><th>Person</th><th>Role</th><th>Sign-in</th><th>Last active</th><th></th></tr></thead><tbody>${T.members.map(m => `<tr><td><div class="person"><span class="avatar">${initials(m.name)}</span><div><strong>${esc(m.name)}${m.id === u.id ? ' (you)' : ''}</strong><small>${esc(m.email)}</small></div></div></td><td>${badge(m.role === 'owner' ? 'Owner' : 'Member', m.role === 'owner' ? 'green' : '')}</td><td><small>${[m.has_password && 'Password', m.google_linked && 'Google'].filter(Boolean).join(' · ') || '—'}</small></td><td><small>${m.last_login_at ? fmtDate(m.last_login_at) : 'Never'}</small></td><td>${owner && m.id !== u.id ? `<button class="small ghost" onclick="removeMember('${esc(m.id)}','${esc(m.name)}')">Remove</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
+  ${T.invites.length ? `<h3 style="margin-top:22px">Pending invitations</h3>${T.invites.map(i => `<div class="summary-row"><small>${esc(i.role)} · expires ${fmtDay(i.expires_at)}</small><p>${esc(i.email)} ${owner ? `<button class="small ghost" onclick="revokeInvite('${esc(i.id)}')">Revoke</button>` : ''}</p></div>`).join('')}` : ''}`}</section>
+  ${owner ? `<section class="panel"><div class="panel-header"><div><h2>Invite a teammate</h2><p>They’ll get an email link to join this workspace. Invitations expire after 7 days.</p></div>${icon('mail')}</div><form class="inline" onsubmit="event.preventDefault();sendInvite()"><input id="invite-email" type="email" aria-label="Teammate email" placeholder="name@company.com" autocomplete="off"><select id="invite-role" aria-label="Role" style="max-width:150px"><option value="member">Member</option><option value="owner">Owner</option></select><button class="primary small">Send invite</button></form><p class="helper">Members can run campaigns and send emails. Owners can also manage the team.</p></section>` : ''}</div>
+  <aside class="wizard-aside stack"><section class="panel"><h2 style="font-size:14px">Your account</h2><div class="summary-row"><small>Name</small><p>${esc(u.name)}</p></div><div class="summary-row"><small>Email</small><p>${esc(u.email)}</p></div><div class="summary-row"><small>Sign-in methods</small><p>${u.has_password ? 'Password' : 'No password'}${u.google_linked ? ' · Google' : ''}</p></div>
+  ${S.authConfig?.google && !u.google_linked ? `<a class="button small stretch" href="/auth/google/start">Link Google account</a><p class="helper">Uses the Google account for ${esc(u.email)}.</p>` : ''}</section>
+  <section class="panel"><h2 style="font-size:14px">${u.has_password ? 'Change password' : 'Set a password'}</h2><form onsubmit="event.preventDefault();changePassword()">${u.has_password ? `<div class="field"><label for="pw-current">Current password</label><input id="pw-current" type="password" autocomplete="current-password">${f.current_password ? `<p class="helper" style="color:var(--red)">${esc(f.current_password)}</p>` : ''}</div>` : ''}<div class="field"><label for="pw-new">New password</label><input id="pw-new" type="password" autocomplete="new-password">${f.password ? `<p class="helper" style="color:var(--red)">${esc(f.password)}</p>` : ''}</div><button class="small primary">Save password</button></form><p class="helper">Saving signs out your other sessions.</p></section>
+  <section class="panel"><h2 style="font-size:14px">Sessions</h2><p class="subtle">Signed in with ${esc({ password: 'a password', google: 'Google', email_link: 'an email link', token: 'an API token' }[S.session.method] || S.session.method)}.</p><button class="small" onclick="signOutEverywhere()">Sign out everywhere</button></section></aside></div>`;
+}
+async function sendInvite() {
+  const email = $('invite-email').value.trim(), role = $('invite-role').value;
+  if (!email) return toast('Enter an email address.');
+  try { S.team = await Api.post('/api/team/invites', { email, role }); render(); toast(`Invitation sent to ${email}.`); } catch (e) { fail(e); }
+}
+async function revokeInvite(id) { try { S.team = await Api.del(`/api/team/invites/${id}`); render(); toast('Invitation revoked.'); } catch (e) { fail(e); } }
+async function removeMember(id, name) { if (!confirm(`Remove ${name} from this workspace? They’ll lose access immediately.`)) return; try { S.team = await Api.del(`/api/team/members/${id}`); render(); toast(`${name} removed.`); } catch (e) { fail(e); } }
+async function changePassword() {
+  try { await Api.post('/api/auth/change-password', { current_password: $('pw-current')?.value, password: $('pw-new').value }); S.pwErrors = null; S.session = await Api.get('/api/session'); render(); toast('Password saved. Other sessions were signed out.'); }
+  catch (e) { if (e.status === 422) { S.pwErrors = e.fields; render(); } else fail(e); }
+}
+async function signOutEverywhere() { try { await Api.post('/api/auth/logout-all'); } catch { /* ignore */ } S.auth = null; await showAuth('signin', { error: '' }); }
+
 render();
+authConfig().then(c => { S.authConfig = c; });
+boot();
