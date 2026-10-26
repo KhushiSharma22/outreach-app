@@ -11,9 +11,9 @@
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
     "test:pg": "TEST_DATABASE_URL=${TEST_DATABASE_URL:-postgres://postgres:devpass@127.0.0.1:54329/postgres} node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
     "db:copy-sqlite": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning scripts/sqlite-to-postgres.mjs",
-    "check": "for f in server/*.mjs scripts/*.mjs dist/*.js; do node --check $f || exit 1; done",
+    "check": "for f in server/*.mjs api/*.mjs scripts/*.mjs dist/*.js; do node --check $f || exit 1; done && node -e \"JSON.parse(require('fs').readFileSync('vercel.json','utf8'))\"",
     "db:local-pg": "docker run -d --name outbound-pg -e POSTGRES_PASSWORD=devpass -p 54329:5432 postgres:17-alpine",
-    "test:browser": "BROWSER_TESTS=1 node --disable-warning=ExperimentalWarning tests/browser.test.mjs"
+    "test:browser": "node --disable-warning=ExperimentalWarning --test tests/browser.test.mjs"
   },
   "optionalDependencies": {
     "@anthropic-ai/sdk": "^1.0.0"

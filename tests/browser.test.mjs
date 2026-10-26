@@ -1,10 +1,11 @@
 // Real-browser check of the sign-in forms (headless Chrome over the DevTools protocol).
 // Catches DOM issues the stubbed UI test can't, e.g. inputs replaced by a re-render before
-// their values are read. Skipped when Chrome isn't installed (set CHROME_PATH to override).
+// their values are read. Skipped when Chrome isn't installed (set CHROME_PATH to point at it).
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../server/app.mjs';
@@ -14,8 +15,8 @@ import { testDatabase } from './helpers.mjs';
 process.env.NODE_ENV = 'test';
 process.env.AI_PROVIDER = 'offline';
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-// Opt-in (npm run test:browser): headless Chrome keeps the `node --test` runner waiting after this file ends.
-const ENABLED = process.env.BROWSER_TESTS === '1' && existsSync(CHROME);
+// Runs whenever Chrome is installed; set BROWSER_TESTS=0 to skip it.
+const ENABLED = process.env.BROWSER_TESTS !== '0' && existsSync(CHROME);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let app, tdb, base, chrome, ws, profile, send;
 
@@ -37,9 +38,13 @@ before(async () => {
   send = (method, params = {}) => new Promise(r => { const id = ++n; pending.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
   await send('Page.enable');
 });
-after(async () => { ws?.close(); chrome?.kill('SIGKILL'); chrome?.unref(); if (profile) rmSync(profile, { recursive: true, force: true }); await app?.close(); await tdb?.drop();
-  // Chrome can leave keep-alive sockets that delay exit by many seconds; results are already reported.
-  setTimeout(() => process.exit(), 1000).unref();
+after(async () => {
+  ws?.close();
+  if (chrome) { const exited = new Promise(r => chrome.once('exit', r)); chrome.kill('SIGKILL'); await Promise.race([exited, sleep(3000)]); chrome.unref(); }
+  await app?.close(); await tdb?.drop();
+  // Chrome's helper processes can keep writing to the profile briefly, so a synchronous delete can spin
+  // forever; delete it in the background with a time limit instead.
+  if (profile) await Promise.race([rm(profile, { recursive: true, force: true, maxRetries: 5 }).catch(() => {}), sleep(3000)]);
 });
 
 const js = async expr => (await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true })).result.result.value;
@@ -51,7 +56,7 @@ const heading = () => js("document.querySelector('.auth-card h2, h1')?.textConte
 const errorText = () => js("document.querySelector('.auth-card .error')?.textContent || ''");
 const link = kind => sentMail().filter(m => m.url?.includes(`/#/${kind}/`)).at(-1).url.replace(/^https?:\/\/[^/]+/, '');
 
-test('sign-up, email confirmation, password reset, and sign-in work through the real forms', { skip: !ENABLED && 'set BROWSER_TESTS=1 (npm run test:browser); needs Chrome' }, async () => {
+test('sign-up, email confirmation, password reset, and sign-in work through the real forms', { skip: !ENABLED && 'needs Chrome (or BROWSER_TESTS=0 was set)' }, async () => {
   await open('/#/signup');
   await submit({ name: 'Test Person', company: 'Testco', email: 'test@testco.test', password: 'my long new password' });
   assert.ok(await until("document.querySelector('.auth-card h2')?.textContent==='Check your email'"), await errorText());

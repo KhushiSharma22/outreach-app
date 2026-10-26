@@ -155,6 +155,17 @@ All routes are under `/api` and scoped to the signed-in workspace. Operations th
 - `dist/`: frontend (`index.html`, `api.js` client, `app.js`, `style.css`)
 - `tests/`: backend acceptance tests, sign-in tests (Google token endpoint mocked), SMTP test against a local fake server, Claude adapter test against a local mock, frontend integration test
 
+## Hosting on Vercel
+
+`api/index.mjs` serves every request that isn't a static file; `vercel.json` rewrites them to it, and `dist/` is served as static files.
+
+- **Background work:** jobs queued by a request run after the response via Vercel's `waitUntil`. Jobs cut off by the function time limit are requeued after `JOB_STALE_MS` (15 minutes).
+- **Scheduler:** it runs at most once a minute while the app is in use, and daily through `api/cron.mjs`, which requires `CRON_SECRET`.
+- **Database:** Postgres is required on Vercel. Use Supabase's transaction pooler URL (port 6543), and pass the CA certificate's text in `DATABASE_CA_CERT_PEM`.
+- **Rate limits:** sign-in rate limits are stored in the database, so they hold across instances.
+
+Step-by-step deployment is in `SETUP_HANDOFF.md`, section 4. `npm start` still runs the app as a normal Node server for local use or any host that runs Node processes.
+
 ## Database: Supabase
 
 The app uses Supabase as a plain PostgreSQL database. Sign-in stays in this app; Supabase Auth and the Data API aren't used.
@@ -171,6 +182,10 @@ Schema creation is additive and idempotent, and an advisory lock prevents two in
 |---|---|---|
 | `DATABASE_URL` | — | Postgres connection string; unset means SQLite. |
 | `DATABASE_CA_CERT` | — | Path to the server's CA certificate for verified TLS. |
+| `DATABASE_CA_CERT_PEM` | — | The certificate's text instead of a path (for Vercel). |
+| `CRON_SECRET` | — | Required by `/api/cron` on Vercel. |
+| `JOB_STALE_MS` | `900000` | A running job older than this is treated as cut off and requeued. |
+| `TRUST_PROXY` | on for Vercel | Set to `true` behind another proxy so rate limits use the client's `X-Forwarded-For` address. |
 | `DATABASE_SSL` | on, except localhost | Set to `false` to turn off TLS, e.g. for a local Postgres. |
 | `DATABASE_POOL_SIZE` | `10` | Maximum connections from this instance. |
 
@@ -190,12 +205,11 @@ Tests never use `DATABASE_URL`, so they can't touch your Supabase project. Set `
 
 These items from the handoff remain open:
 
-- **Multi-process rate limiting.** Sign-in rate limits are kept in memory, so they don't carry across server restarts or multiple instances.
 - **Account management.** There's no self-service account deletion, email change, or two-factor sign-in yet.
 - **Connected-mailbox sending** (OAuth, provider message IDs, reply and bounce sync). Until it exists, outcomes are recorded manually.
 - **An AI web-research or enrichment provider**, plus a live email-verification provider. Verification status currently comes from your import.
 - **Pre-approved rules mode.**
-- **Deployment.** The app runs as a single Node process with in-process background workers. Hosting and process supervision aren't set up yet.
+- **First production deployment.** The Vercel setup is in the code (`api/`, `vercel.json`) and tested locally, but it hasn't been deployed yet. See `SETUP_HANDOFF.md`, section 4.
 - **Data retention and deletion policies.**
 
 `.openai/hosting.json` refers to the old static-only hosting. The app now needs the Node server, so a static deployment of `dist/` will show a connection error.

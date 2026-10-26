@@ -1,24 +1,32 @@
-// Durable job queue (SQLite-backed) with retries and dead-lettering, plus the daily scheduler.
+// Durable job queue (stored in the database) with retries and dead-lettering, plus the daily scheduler.
+// Long-running server: a poller runs due jobs. Serverless (Vercel): enqueue() only records that work is
+// waiting; the request handler runs it after the response via waitUntil, and a cron sweeps the rest.
 import { id, now } from './db.mjs';
 import { json, localView } from './lib.mjs';
 import { executeDiscovery, failRun, startDiscovery } from './sourcing.mjs';
 import { executeDraftRun, startDraftRun } from './drafts.mjs';
 import { planFollowups } from './sequences.mjs';
 
-export function createJobs(db, log = () => {}) {
+const STALE_MS = () => +(process.env.JOB_STALE_MS || 15 * 60e3); // a running job older than this was cut off
+
+export function createJobs(db, log = () => {}, { serverless = false } = {}) {
   const handlers = {}, running = new Set(), inflight = new Set();
+  let kicked = false;
   let timer = null, schedTimer = null;
   const jobs = {
     async enqueue(workspaceId, type, payload, { dedupe = null, runAt = now(), maxAttempts = 3 } = {}) {
       if (dedupe) { const ex = await db.get('SELECT * FROM jobs WHERE dedupe_key=?', [dedupe]); if (ex) return ex; }
       const row = { id: id(), workspace_id: workspaceId, campaign_id: payload.campaign_id || null, type, payload: JSON.stringify(payload), status: 'queued', run_at: runAt, attempts: 0, max_attempts: maxAttempts, last_error: null, dedupe_key: dedupe, locked_at: null, created_at: now(), finished_at: null };
       await db.insert('jobs', row);
-      setImmediate(async () => await jobs.tick());
+      if (serverless) kicked = true;
+      else setImmediate(() => jobs.tick().catch(e => log('tick_error', { error: String(e) })));
       return row;
     },
     on(type, handler, onDead) { handlers[type] = { handler, onDead }; },
     // Runs due jobs; each job is claimed atomically so it executes once per attempt.
     async tick() {
+      // Requeue jobs whose worker died (crash, or a serverless function hitting its time limit).
+      await db.run("UPDATE jobs SET status='queued', locked_at=NULL WHERE status='running' AND locked_at<?", [new Date(Date.now() - STALE_MS()).toISOString()]);
       const due = await db.all("SELECT * FROM jobs WHERE status='queued' AND run_at<=? ORDER BY run_at LIMIT 4", [now()]);
       const batch = Promise.all(due.filter(j => !running.has(j.id)).map(async j => {
         if (!(await db.run("UPDATE jobs SET status='running', attempts=attempts+1, locked_at=? WHERE id=? AND status='queued'", [now(), j.id])).changes) return;
@@ -33,7 +41,7 @@ export function createJobs(db, log = () => {}) {
           log('job_failed', { job: j.id, type: j.type, attempts, error: msg });
           if (attempts >= j.max_attempts) {
             await db.run("UPDATE jobs SET status='dead', last_error=?, finished_at=? WHERE id=?", [msg, now(), j.id]);
-            try { h?.onDead?.(json(j.payload), j, msg); } catch (err) { log('dead_handler_failed', { job: j.id, error: String(err) }); }
+            try { await h?.onDead?.(json(j.payload), j, msg); } catch (err) { log('dead_handler_failed', { job: j.id, error: String(err) }); }
           } else {
             await db.run("UPDATE jobs SET status='queued', last_error=?, run_at=? WHERE id=?", [msg, new Date(Date.now() + 2000 * 2 ** attempts).toISOString(), j.id]);
           }
@@ -49,6 +57,17 @@ export function createJobs(db, log = () => {}) {
       if (scheduler) { schedTimer = setInterval(async () => { try { await scheduler(); } catch (e) { log('scheduler_error', { error: String(e) }); } }, scheduleMs); setTimeout(async () => { try { await scheduler(); } catch (e) { log('scheduler_error', { error: String(e) }); } }, 500); }
     },
     stop() { clearInterval(timer); clearInterval(schedTimer); },
+    // Serverless: true once per request if that request queued work (and resets the flag).
+    takeKick() { const k = kicked; kicked = false; return k; },
+    // Runs due jobs until none are left or the time budget is used up (serverless functions have a limit).
+    async runDue(budgetMs = 240e3) {
+      const until = Date.now() + budgetMs;
+      while (Date.now() < until) {
+        await jobs.tick();
+        while (inflight.size) await Promise.all([...inflight]);
+        if (!await db.get("SELECT 1 FROM jobs WHERE status='queued' AND run_at<=?", [now()])) return;
+      }
+    },
     // Test helper: runs due jobs until none are queued, waiting for jobs already in flight.
     async drain(max = 50) {
       for (let i = 0; i < max; i++) {

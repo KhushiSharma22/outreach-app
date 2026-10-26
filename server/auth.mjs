@@ -39,15 +39,17 @@ function passwordProblem(pw, email) {
   return null;
 }
 
-// ---------- Rate limiting (in-process sliding window) ----------
-const hits = new Map();
-function limit(key, max, windowMs) {
-  const t = Date.now(), list = (hits.get(key) || []).filter(x => x > t - windowMs);
-  if (list.length >= max) throw new AppError(429, 'rate_limited', 'Too many attempts. Wait a few minutes and try again.');
-  list.push(t); hits.set(key, list);
-  if (hits.size > 10000) for (const [k, v] of hits) if (!v.some(x => x > t - windowMs)) hits.delete(k);
+// ---------- Rate limiting (sliding window, stored in the database so it holds across instances) ----------
+async function limit(db, key, max, windowMs) {
+  const k = hash('rate', key); // keys can contain emails; store only a hash
+  const n = (await db.get('SELECT count(*) n FROM rate_limit_hits WHERE key=? AND at>?', [k, new Date(Date.now() - windowMs).toISOString()])).n;
+  if (n >= max) throw new AppError(429, 'rate_limited', 'Too many attempts. Wait a few minutes and try again.');
+  await db.insert('rate_limit_hits', { key: k, at: now() });
+  if (Math.random() < 0.02) await db.run('DELETE FROM rate_limit_hits WHERE at<?', [new Date(Date.now() - 2 * DAY).toISOString()]);
 }
-export const resetRateLimits = () => hits.clear();
+export const resetRateLimits = db => db.run('DELETE FROM rate_limit_hits');
+// Behind Vercel (or TRUST_PROXY=true) the client address comes from the proxy's X-Forwarded-For.
+export const clientIp = req => (process.env.VERCEL || process.env.TRUST_PROXY === 'true') && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
 
 // ---------- One-time tokens ----------
 const newToken = () => randomBytes(32).toString('base64url');
@@ -136,7 +138,7 @@ export function createAuth({ db, publicUrl }) {
 
     async signup(out, req, body) {
       const name = String(body.name || '').trim(), email = normEmail(body.email), company = String(body.company || '').trim();
-      limit('signup:' + req.socket.remoteAddress, 20, 3600e3);
+      await limit(db, 'signup:' + clientIp(req), 20, 3600e3);
       const fields = {};
       if (!name) fields.name = 'Enter your name.';
       if (!email || !EMAIL_RE.test(email)) fields.email = 'Enter a valid email address.';
@@ -164,8 +166,8 @@ export function createAuth({ db, publicUrl }) {
 
     async login(out, req, body) {
       const email = normEmail(body.email);
-      limit('login-ip:' + req.socket.remoteAddress, 50, 900e3);
-      if (email) limit('login:' + email, 10, 900e3);
+      await limit(db, 'login-ip:' + clientIp(req), 50, 900e3);
+      if (email) await limit(db, 'login:' + email, 10, 900e3);
       const user = email && await userByEmail(db, email);
       const ok = await verifyPassword(String(body.password ?? ''), user?.password_hash);
       if (!user || !ok) throw new AppError(401, 'invalid_credentials', 'Email or password is incorrect.');
@@ -175,7 +177,7 @@ export function createAuth({ db, publicUrl }) {
 
     async resendVerification(req, body) {
       const email = normEmail(body.email);
-      limit('resend:' + (email || req.socket.remoteAddress), 5, 3600e3);
+      await limit(db, 'resend:' + (email || clientIp(req)), 5, 3600e3);
       const user = email && await userByEmail(db, email);
       if (user && !user.email_verified_at) await sendVerification(user);
       return { status: 'check_email' };
@@ -191,7 +193,7 @@ export function createAuth({ db, publicUrl }) {
 
     async forgotPassword(req, body) {
       const email = normEmail(body.email);
-      limit('forgot:' + (email || req.socket.remoteAddress), 5, 3600e3);
+      await limit(db, 'forgot:' + (email || clientIp(req)), 5, 3600e3);
       const user = email && await userByEmail(db, email);
       if (user) {
         await db.run("UPDATE auth_tokens SET used_at=? WHERE kind='reset_password' AND user_id=? AND used_at IS NULL", [now(), user.id]);
@@ -219,7 +221,7 @@ export function createAuth({ db, publicUrl }) {
 
     async changePassword(ctx, out, req, body) {
       const user = await db.get('SELECT * FROM users WHERE id=?', [ctx.user.id]);
-      limit('change-pw:' + user.id, 10, 900e3);
+      await limit(db, 'change-pw:' + user.id, 10, 900e3);
       if (user.password_hash && !(await verifyPassword(String(body.current_password ?? ''), user.password_hash))) throw invalid('Your current password is incorrect.', { current_password: 'Incorrect.' });
       const problem = passwordProblem(body.password, user.email);
       if (problem) throw invalid(problem, { password: problem });
@@ -286,7 +288,7 @@ export function createAuth({ db, publicUrl }) {
       requireOwner(ctx);
       const email = normEmail(body.email), role = body.role === 'owner' ? 'owner' : 'member';
       if (!email || !EMAIL_RE.test(email)) throw invalid('Enter a valid email address.', { email: 'Invalid.' });
-      limit('invite:' + ctx.ws, 50, DAY);
+      await limit(db, 'invite:' + ctx.ws, 50, DAY);
       if (await db.get('SELECT 1 FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? AND lower(u.email)=?', [ctx.ws, email])) throw conflict('already_member', `${email} is already a member.`);
       await db.run("UPDATE auth_tokens SET used_at=? WHERE kind='invite' AND workspace_id=? AND lower(email)=? AND used_at IS NULL", [now(), ctx.ws, email]);
       const token = await createToken(db, { kind: 'invite', ttl: 7 * DAY, email, workspace_id: ctx.ws, role, created_by: ctx.user.id });

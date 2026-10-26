@@ -7,11 +7,11 @@ export async function testDatabase() {
   if (!admin) return { databaseUrl: null, dbFile: ':memory:', drop: async () => {} };
   const { default: pg } = await import('pg');
   const name = 'outbound_test_' + randomBytes(6).toString('hex');
-  const c = new pg.Client({ connectionString: admin });
+  const c = new pg.Client({ connectionString: admin, connectionTimeoutMillis: 5000 });
   await c.connect(); await c.query(`CREATE DATABASE ${name}`); await c.end();
   const url = new URL(admin); url.pathname = '/' + name;
   return {
     databaseUrl: url.toString(), dbFile: ':memory:',
-    drop: async () => { const d = new pg.Client({ connectionString: admin }); await d.connect(); await d.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`); await d.end(); },
+    drop: async () => { const d = new pg.Client({ connectionString: admin, connectionTimeoutMillis: 5000 }); await d.connect(); await d.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`); await d.end(); },
   };
 }

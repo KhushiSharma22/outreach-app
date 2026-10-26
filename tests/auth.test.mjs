@@ -30,7 +30,7 @@ before(async () => {
   base = `http://127.0.0.1:${app.server.address().port}`;
 });
 after(async () => { await app.close(); google.close(); await tdb.drop(); });
-beforeEach(() => resetRateLimits());
+beforeEach(() => resetRateLimits(app.db));
 
 // Minimal browser: keeps cookies, sends the CSRF header.
 function browser() {

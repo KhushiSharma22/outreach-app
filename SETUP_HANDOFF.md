@@ -102,41 +102,53 @@ Brevo works the same way: host `smtp-relay.brevo.com`, port 587, and the login a
 
 The Google flow is covered by tests against a mock of Google's token endpoint, but it hasn't been run against real Google yet. If you see `redirect_uri_mismatch`, step 3 or `PUBLIC_URL` is wrong.
 
-## 4. Vercel: left to do, and it needs code changes first
+## 4. Vercel: code is ready, deployment left to do
 
-**Read this before creating the Vercel project.** The app currently runs as one long-lived Node server. It runs a background job queue (discovery and drafting jobs) and a 30-second scheduler loop inside that process. Vercel runs code as serverless functions that only exist while a request is being handled, so as-is:
+The code for Vercel is in place. On Vercel the app runs like this:
 
-- background jobs would stop when the response is sent;
-- the daily scheduler would never run;
-- SQLite data would be lost, so Supabase is required;
-- sign-in rate limits, which are kept in memory, would reset per instance.
+- **Requests:** `api/index.mjs` handles every request that isn't a static file. `vercel.json` rewrites them to it, and it reuses the same request handler as `npm start`. `dist/` is served as static files.
+- **Background work:** discovery and drafting run after the response is sent, using Vercel's `waitUntil`, within the function's 300-second limit. If a function is cut off mid-job, the job is requeued after 15 minutes.
+- **Scheduler:** it's checked at most once a minute when the app is in use. `api/cron.mjs` also runs it daily at 13:00 UTC, protected by `CRON_SECRET`.
+- **Supabase:** database setup only runs when the schema changes, under a lock that's safe with Supabase's transaction pooler. The CA certificate can be passed as text in `DATABASE_CA_CERT_PEM`.
+- **Sign-in rate limits:** stored in the database, so they apply across instances.
 
-**Simpler alternative:** Render, Railway, and Fly.io run the app unchanged as a Node web service. Use `npm start` as the start command, Node 24, and the same environment variables. If Vercel isn't a hard requirement, this is about an hour of work instead of a day.
+`npm test` covers this locally: rewritten paths, background work after the response, a request body Vercel has already read, cron authorization, and requeuing a job that was cut off. These haven't been tried on Vercel itself yet.
 
-**Code changes required for Vercel:**
-1. **Add `api/index.mjs`.** Create the app once per instance with `workers: false` and pass each request to it:
-   `export default async (req, res) => { (await appPromise).server.emit('request', req, res); }`
-2. **Run jobs after the response.** Wrap job execution in `waitUntil(...)` from `@vercel/functions`, so jobs started by a request finish after the response is sent. In `server/jobs.mjs`, `enqueue` currently starts jobs with `setImmediate`.
-3. **Add `api/cron.mjs`.** It should check `Authorization: Bearer ${CRON_SECRET}`, then call `jobs.drain()` and `runScheduler(...)`. Register it in `vercel.json` under `crons`. Vercel's Hobby plan only allows daily crons, so the Pro plan is needed for a frequent schedule such as `*/5 * * * *`.
-4. **Add `vercel.json`.** Serve `dist/` as static files, and rewrite `/api/(.*)`, `/auth/(.*)`, and `/sample-contacts.csv` to the function.
-5. **Make schema creation pooler-safe.** In `server/db.mjs` (`openPostgres`), schema creation uses `pg_advisory_lock`, which is session-level. Supabase's transaction pooler can leave that lock held. Wrap schema creation in a transaction and use `pg_advisory_xact_lock` instead, then use the **Transaction pooler** (port 6543) URL with `DATABASE_POOL_SIZE=1` on Vercel.
-6. **Optional:** move sign-in rate limits from memory into a Postgres table.
+**Steps:**
+1. **Transaction pooler URL.** In Supabase, open **Connect → Transaction pooler**. It's the same as the session pooler string but on port **6543**:
+   `postgresql://postgres.<project-ref>:<PASSWORD>@aws-0-<region>.pooler.supabase.com:6543/postgres`
+2. **Cron secret.** Run `openssl rand -hex 32` and keep the output.
+3. **Import the repository.** vercel.com → **Add New → Project** → import `KhushiSharma22/outreach-app`. If it isn't listed, click **Adjust GitHub App Permissions** and grant access to the repository.
+4. **Build settings.** Framework Preset: **Other**. Leave Build Command empty. Output Directory: `dist` (already set in `vercel.json`).
+5. **Environment variables (Production):**
+   | Name | Value |
+   |---|---|
+   | `DATABASE_URL` | the port-6543 URL from step 1 |
+   | `DATABASE_CA_CERT_PEM` | the full text of the Supabase certificate file, from `-----BEGIN CERTIFICATE-----` to `-----END CERTIFICATE-----` |
+   | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | as in section 2 |
+   | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | as in section 3 |
+   | `ANTHROPIC_API_KEY` | your Anthropic key (optional) |
+   | `CRON_SECRET` | the value from step 2 |
+   | `PUBLIC_URL` | optional. If unset, the app uses the project's production domain. Set it if you add a custom domain. |
+6. Click **Deploy**.
+7. **Node version.** Go to **Settings → General → Node.js Version**, choose **24.x**, and redeploy if it was different.
+8. **Google.** Add the production address to the Google OAuth client (section 3, step 3):
+   - JavaScript origin: `https://<your-domain>`
+   - Redirect URI: `https://<your-domain>/auth/google/callback`
+9. **Check:**
+   - Open the site and sign up. The confirmation email must arrive.
+   - Sign in with Google.
+   - Load the sample contacts, create a campaign, and run discovery. The batch must finish within a minute or two, which shows background work runs on Vercel.
+   - Open **Settings → Cron Jobs** in the Vercel project, run `/api/cron` once by hand, and check that it returns `{"ok":true,...}`.
+10. **If something fails,** check **Deployments → (latest) → Logs**:
+    - "The service could not start" means a missing or wrong `DATABASE_URL` or certificate.
+    - `redirect_uri_mismatch` from Google means step 8 doesn't match the domain.
 
-**Then create the Vercel project:**
-1. vercel.com → **Add New** → **Project** → import `KhushiSharma22/outreach-app`.
-2. **Framework preset:** Other. Leave **Build command** empty. **Output directory:** `dist`.
-3. **Settings → General → Node.js Version:** 24.x.
-4. **Settings → Environment Variables (Production):**
-   - `DATABASE_URL`: the transaction pooler URL
-   - `DATABASE_CA_CERT`: the certificate's path. Commit the Supabase CA certificate somewhere public-safe for this, since it isn't a secret, or change the code to accept the certificate's contents in an env var.
-   - `DATABASE_POOL_SIZE=1`
-   - `PUBLIC_URL=https://<project>.vercel.app`, or your custom domain
-   - `SMTP_*` and `MAIL_FROM`
-   - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
-   - `ANTHROPIC_API_KEY` (optional)
-   - `CRON_SECRET`: any long random string
-5. Deploy. Then add `https://<domain>` and `https://<domain>/auth/google/callback` to the Google client (section 3, step 3).
-6. **Check:** sign up and receive the confirmation email; sign in with Google; import the sample contacts and run discovery. The batch must complete, which proves that background jobs run on Vercel.
+**Plan limits:**
+- Vercel's free Hobby plan allows only a daily cron, which is what `vercel.json` uses.
+- Background work after each request doesn't depend on the plan.
+- With the Pro plan you can change the cron in `vercel.json` to `*/10 * * * *` for more regular scheduling.
+- Check Vercel's current limits for function duration on your plan. `vercel.json` asks for 300 seconds.
 
 ## 5. What's left from BACKEND_HANDOFF.md
 
@@ -170,13 +182,13 @@ The rest is below.
 5. **Sequence edits.** People already in a sequence keep the version they started with. Moving them onto an edited version, which the handoff calls "explicit migration", isn't supported.
 6. **Operations monitoring (§12).**
    - Done: failed background jobs show on Home.
-   - Missing: detecting jobs stuck mid-run (they're only retried when the server restarts).
+   - Done: jobs cut off mid-run are requeued after 15 minutes (`JOB_STALE_MS`).
    - Missing: a view of AI spend or budget. Token usage is logged in the `ai_calls` table but not shown anywhere.
    - Missing: per-campaign error alerts.
 7. **Security and data handling (§12).**
    - Done: workspace isolation, the audit log, and the workspace-wide sending stop.
    - Missing: data retention and deletion policies, account or workspace deletion, and data export.
-   - Missing: sign-in rate limits are kept in memory, so they reset on restart and aren't shared across servers.
+   - Done: sign-in rate limits are stored in the database, so they hold across restarts and servers.
 8. **Acceptance tests (§14).** Most scenarios are covered. Two aren't:
    - Concurrent edits to the same draft. On Postgres, one save can fail with a raw error instead of the friendly "changed since you loaded it" message (`saveRevision` in `server/drafts.mjs`).
    - Provider failures and uncertain send outcomes. These only apply once mailbox sending exists.
@@ -185,7 +197,7 @@ The rest is below.
 
 9. SMTP: see section 2.
 10. Google OAuth: see section 3.
-11. Hosting: see section 4. Vercel needs the code changes listed there first.
+11. Hosting: see section 4. The code is ready; the Vercel project still needs to be created.
 
 ### Decisions still open with the product owner (handoff §15)
 

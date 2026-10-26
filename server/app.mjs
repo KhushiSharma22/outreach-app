@@ -35,9 +35,11 @@ export async function seedWorkspace(db, { name = 'Northstar', userName = 'Maya',
   return { workspace: ws, user, token };
 }
 
-export async function createApp({ databaseUrl = process.env.DATABASE_URL || null, dbFile = process.env.DB_FILE || join(ROOT, 'data', 'outreach.db'), workers = true, authMode = process.env.AUTH_MODE || 'accounts', publicUrl = process.env.PUBLIC_URL || `http://127.0.0.1:${process.env.PORT || 4173}` } = {}) {
+export async function createApp({ databaseUrl = process.env.DATABASE_URL || null, dbFile = process.env.DB_FILE || join(ROOT, 'data', 'outreach.db'), workers = true, serverless = !!process.env.VERCEL, authMode = process.env.AUTH_MODE || 'accounts',
+  publicUrl = process.env.PUBLIC_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : `http://127.0.0.1:${process.env.PORT || 4173}`) } = {}) {
+  if (process.env.VERCEL && !databaseUrl) throw new Error('DATABASE_URL is required on Vercel: serverless functions have no persistent disk for SQLite.');
   const db = await openDb(databaseUrl ? { url: databaseUrl } : { file: dbFile });
-  const jobs = createJobs(db, log);
+  const jobs = createJobs(db, log, { serverless });
   const ctxFor = (ws, user = null) => ({ db, ws, user, jobs });
   registerHandlers(jobs, db, ws => ctxFor(ws));
 
@@ -191,7 +193,8 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
     } catch { send(res, 404, { error: { code: 'not_found', message: 'Not found.' } }); }
   }
 
-  const server = createServer(async (req, res) => {
+  // One request listener serves both the Node server and the Vercel function (api/index.mjs).
+  const handle = async (req, res) => {
     const url = new URL(req.url, 'http://localhost'), started = Date.now();
     const cookies = [], out = { setCookie: c => cookies.push(c), headers: () => cookies.length ? { 'set-cookie': cookies } : {} };
     try {
@@ -206,10 +209,12 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
       else { log('error', { path: url.pathname, error: String(e?.stack || e) }); send(res, 500, { error: { code: 'internal', message: 'Something went wrong. Please try again.' } }); }
     }
     if (url.pathname.startsWith('/api/')) log('request', { method: req.method, path: url.pathname, status: res.statusCode, ms: Date.now() - started });
-  });
+  };
+  const server = createServer(handle);
+  const scheduler = () => runScheduler(db, ws => ctxFor(ws));
 
-  if (workers) await jobs.start({ scheduler: async () => await runScheduler(db, ws => ctxFor(ws)), scheduleMs: +(process.env.SCHEDULER_INTERVAL_MS || 30000) });
-  return { server, db, jobs, ctxFor, devToken, auth, publicUrl, close: async () => { jobs.stop(); const closed = new Promise(r => server.close(r)); server.closeAllConnections(); await closed; await db.close(); } };
+  if (workers && !serverless) await jobs.start({ scheduler, scheduleMs: +(process.env.SCHEDULER_INTERVAL_MS || 30000) });
+  return { server, handle, scheduler, db, jobs, ctxFor, devToken, auth, publicUrl, close: async () => { jobs.stop(); const closed = new Promise(r => server.close(r)); server.closeAllConnections(); await closed; await db.close(); } };
 }
 
 function send(res, status, body, headers = {}) {
@@ -222,6 +227,13 @@ function redirect(res, location, headers = {}) {
   res.end();
 }
 function readBody(req) {
+  // A platform (e.g. Vercel) may have read the stream already and exposed the parsed body instead.
+  if (req.readableEnded) {
+    const b = req.body;
+    if (b && typeof b === 'object' && !Buffer.isBuffer(b)) return Promise.resolve(b);
+    try { const v = b ? JSON.parse(String(b)) : {}; return Promise.resolve(v && typeof v === 'object' ? v : {}); }
+    catch { return Promise.reject(new AppError(400, 'bad_json', 'Request body must be JSON.')); }
+  }
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', c => { size += c.length; if (size > 6_000_000) { reject(new AppError(413, 'too_large', 'Request is too large.')); req.destroy(); } else chunks.push(c); });
