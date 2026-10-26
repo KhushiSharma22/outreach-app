@@ -127,7 +127,7 @@ The code for Vercel is in place. On Vercel the app runs like this:
    | `DATABASE_CA_CERT_PEM` | the full text of the Supabase certificate file, from `-----BEGIN CERTIFICATE-----` to `-----END CERTIFICATE-----` |
    | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | as in section 2 |
    | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | as in section 3 |
-   | `ANTHROPIC_API_KEY` | your Anthropic key (optional) |
+   | `GEMINI_API_KEY` | your Gemini key (optional; enables AI drafting and qualification) |
    | `CRON_SECRET` | the value from step 2 |
    | `PUBLIC_URL` | optional. If unset, the app uses the project's production domain. Set it if you add a custom domain. |
 6. Click **Deploy**.
@@ -225,4 +225,4 @@ npm run test:browser   # sign-up, confirm, reset, and sign-in through real forms
 ## Known state
 
 - The existing Northstar workspace owner, `maya@northstar.example`, is demo data from an earlier version. Use **Forgot password?** to set a password for it, or ignore it.
-- AI features use Claude when `ANTHROPIC_API_KEY` is set; otherwise they fall back to templates. Outreach sending is always manual (send queue).
+- AI features use Gemini when `GEMINI_API_KEY` is set (or Claude with `ANTHROPIC_API_KEY`); otherwise they fall back to templates. Outreach sending is always manual (send queue).

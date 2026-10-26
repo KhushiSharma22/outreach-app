@@ -6,11 +6,11 @@ This builds the backend described in `BACKEND_HANDOFF.md` and connects the exist
 
 | Decision | Choice |
 |---|---|
-| Stack | Node.js (≥ 24), no framework. Dependencies: `pg`, `nodemailer`, and the optional Anthropic SDK. |
+| Stack | Node.js (≥ 24), no framework. Dependencies: `pg`, `nodemailer`, and the optional Gemini and Anthropic SDKs. |
 | Database | **Supabase (PostgreSQL)** when `DATABASE_URL` is set; otherwise a local SQLite file. The same code and SQL run on both. |
 | Delivery | **Manual send tasks.** The server never sends email. You send from your own mailbox and confirm. |
 | Sourcing | **CSV import** from your CRM or an authorized provider (a Sales Navigator export counts as an import). AI web research is shown as unavailable. |
-| AI | **Claude** (`claude-opus-5-5`) when the SDK is installed and `ANTHROPIC_API_KEY` is set. Otherwise a deterministic, evidence-only template provider is used. |
+| AI | **Gemini** (`GEMINI_API_KEY`, default model `gemini-flash-latest`) or **Claude** (`ANTHROPIC_API_KEY`, `claude-opus-5-5`). Otherwise a deterministic, evidence-only template provider is used. |
 | Approval mode | Daily review only. Pre-approved rules mode is disabled until a policy is agreed. |
 | Sign-in | Email + password (confirmed by email) and Google. Sign-up creates a workspace; owners invite teammates. |
 
@@ -18,7 +18,7 @@ This builds the backend described in `BACKEND_HANDOFF.md` and connects the exist
 
 ```sh
 npm install
-cp .env.example .env # optional: fill in Supabase, SMTP, Google, Anthropic settings
+cp .env.example .env # optional: fill in Supabase, SMTP, Google, and AI settings
 npm start            # http://127.0.0.1:4173
 ```
 
@@ -36,11 +36,13 @@ To try the whole flow quickly, go to **Contacts → Load fictional sample contac
 |---|---|---|
 | `PORT`, `HOST` | `4173`, `127.0.0.1` | Listen address. Dev sign-in refuses to bind beyond localhost. |
 | `DB_FILE` | `data/outreach.db` | SQLite database path. |
-| `AI_PROVIDER` | `auto` | `auto` (Claude if a key is set), `claude` (required), or `offline`. |
+| `AI_PROVIDER` | `auto` | `auto` (Claude if `ANTHROPIC_API_KEY` is set, else Gemini if `GEMINI_API_KEY` is set, else templates), or `claude`, `gemini`, `offline`. |
+| `GEMINI_API_KEY` | — | Enables Gemini. Get a key at aistudio.google.com/apikey. |
+| `GEMINI_MODEL` | `gemini-flash-latest` | Gemini model override. |
 | `ANTHROPIC_API_KEY` | — | Enables Claude. |
-| `ANTHROPIC_MODEL` | `claude-opus-5-5` | Model override. |
+| `ANTHROPIC_MODEL` | `claude-opus-5-5` | Claude model override. |
 | `MAX_CANDIDATES_PER_RUN` | `300` | Contacts checked per discovery batch. |
-| `MAX_AI_ASSESSMENTS_PER_RUN` | `40` | Cost cap on Claude fit assessments per batch. |
+| `MAX_AI_ASSESSMENTS_PER_RUN` | `40` | Cost cap on AI fit assessments per batch. |
 | `SCHEDULER_INTERVAL_MS` | `30000` | How often the daily scheduler checks. |
 | `PUBLIC_URL` | `http://127.0.0.1:PORT` | Address users reach. Used in email links and the Google redirect; `https://` turns on secure cookies. Required when binding beyond localhost. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SECURE` | — | SMTP server for confirmation, reset, and invite emails (port 465 implies TLS). Required when binding beyond localhost. |
@@ -82,9 +84,9 @@ How it's protected:
 - Invalid, bounced, or suppressed emails, exclusion matches, and stale or missing signals are *excluded*.
 - Unverified or catch-all emails need review when "require verified email" is on.
 
-Claude, if configured, then assesses contextual fit. It can only make a decision stricter. Every batch is kept. A batch below 25 qualified shows a shortfall with its most common blockers rather than padding the list. Re-running never re-adds the same person.
+The AI provider, if configured, then assesses contextual fit. It can only make a decision stricter. Every batch is kept. A batch below 25 qualified shows a shortfall with its most common blockers rather than padding the list. Re-running never re-adds the same person.
 
-**Drafts** have immutable revisions. Each one records its generator (Claude model or template), the evidence it cites, and the context and config versions it was written with. A post-generation guard rejects AI drafts that:
+**Drafts** have immutable revisions. Each one records its generator (AI model or template), the evidence it cites, and the context and config versions it was written with. A post-generation guard rejects AI drafts that:
 
 - mention hiring, funding, leadership, or expansion without cited evidence of that signal
 - contain unresolved placeholders
@@ -150,10 +152,10 @@ All routes are under `/api` and scoped to the signed-in workspace. Operations th
 - `server/sequences.mjs`: sequence versions, enrollment, follow-up planning
 - `server/jobs.mjs`: durable job queue and daily scheduler
 - `server/reporting.mjs`: metrics, activity, contacts
-- `server/ai.mjs`: Claude and offline providers, draft guard
+- `server/ai.mjs`: Gemini, Claude, and offline providers (shared prompts and schemas), draft guard
 - `server/sample.mjs`: fictional sample CSV
 - `dist/`: frontend (`index.html`, `api.js` client, `app.js`, `style.css`)
-- `tests/`: backend acceptance tests, sign-in tests (Google token endpoint mocked), SMTP test against a local fake server, Claude adapter test against a local mock, frontend integration test
+- `tests/`: backend acceptance tests, sign-in tests (Google token endpoint mocked), SMTP test against a local fake server, Gemini and Claude adapter tests against local mocks, frontend integration test
 
 ## Hosting on Vercel
 

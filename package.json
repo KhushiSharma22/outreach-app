@@ -16,7 +16,8 @@
     "test:browser": "node --disable-warning=ExperimentalWarning --test tests/browser.test.mjs"
   },
   "optionalDependencies": {
-    "@anthropic-ai/sdk": "^1.0.0"
+    "@anthropic-ai/sdk": "^1.0.0",
+    "@google/genai": "^2.31.0"
   },
   "dependencies": {
     "nodemailer": "^10.2.1",
