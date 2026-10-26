@@ -11,10 +11,12 @@ before(async () => {
     req.on('data', c => body += c);
     req.on('end', () => {
       seen.push({ url: req.url, headers: req.headers, body: JSON.parse(body) });
+      const r = typeof reply === 'function' ? reply(req.url) : reply;
+      if (r.status) { res.writeHead(r.status, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: r.status, message: r.message || 'This model is currently experiencing high demand.', status: 'UNAVAILABLE' } })); }
       if (reply.status) { res.writeHead(reply.status, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: reply.status, message: 'Resource exhausted', status: 'RESOURCE_EXHAUSTED' } })); }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({
-        candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify(reply.out) }] }, finishReason: reply.finish || 'STOP' }],
+        candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify(r.out) }] }, finishReason: r.finish || 'STOP' }],
         usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 7, thoughtsTokenCount: 3 },
         modelVersion: 'gemini-mock-001',
       }));
@@ -23,7 +25,7 @@ before(async () => {
   await new Promise(r => mock.listen(0, '127.0.0.1', r));
   // No AI_PROVIDER and no Anthropic key: auto-selection must pick Gemini from GEMINI_API_KEY alone.
   delete process.env.AI_PROVIDER; delete process.env.ANTHROPIC_API_KEY; delete process.env.ANTHROPIC_AUTH_TOKEN;
-  Object.assign(process.env, { GEMINI_API_KEY: 'test-gemini-key', GEMINI_BASE_URL: `http://127.0.0.1:${mock.address().port}`, NODE_ENV: 'test' });
+  Object.assign(process.env, { AI_RETRY_DELAYS_MS: '10,10', GEMINI_API_KEY: 'test-gemini-key', GEMINI_BASE_URL: `http://127.0.0.1:${mock.address().port}`, NODE_ENV: 'test' });
 });
 after(() => mock.close());
 
@@ -62,9 +64,29 @@ test('Gemini: auto-selected, structured JSON output, untrusted-data framing, usa
   // Safety blocks surface as refusals, never as content.
   reply = { finish: 'SAFETY', out: {} };
   await assert.rejects(ai.runAi(db, 'ws', 'draft', pr => pr.draftEmail({ context, config, lead, evidence })), /declined/);
-  // Rate limits become a retryable error the job queue understands.
-  reply = { status: 429 };
-  await assert.rejects(ai.runAi(db, 'ws', 'draft', pr => pr.draftEmail({ context, config, lead, evidence })), e => e.code === 'ai_rate_limited');
-  assert.equal((await db.get("SELECT count(*) n FROM ai_calls WHERE status='error'")).n, 2);
+  const good = reply = { out: reply?.out || { subject: 'Hiring at Acme', body: 'Hi Asha,\n\nSaw Acme is hiring two SDRs.\n\nWe help B2B teams with outbound.\n\nWorth a chat?\n\nMaya\nNorthstar', evidence_ids: ['ev1'], review_note: '' } };
+  const draft = () => ai.runAi(db, 'ws', 'draft', pr => pr.draftEmail({ context, config, lead, evidence }));
+  // One overloaded response, then success: retried transparently on the same model.
+  let calls = 0;
+  reply = () => (++calls === 1 ? { status: 503 } : good);
+  let r2 = await draft();
+  assert.equal(r2.provider, 'gemini');
+  assert.equal(calls, 2);
+  // Main model stays overloaded: the lighter fallback model answers.
+  reply = url => url.includes('gemini-flash-lite-latest') ? good : { status: 503 };
+  r2 = await draft();
+  assert.equal(r2.provider, 'gemini');
+  assert.match(seen.at(-1).url, /gemini-flash-lite-latest:generateContent/);
+  // Everything overloaded (or rate limited): the step falls back to a template and says why.
+  for (const status of [503, 429]) {
+    reply = { status };
+    r2 = await draft();
+    assert.equal(r2.provider, 'offline');
+    assert.match(r2.degraded, /template was used/);
+    assert.match(r2.out.body, /^Hi Asha,/);
+  }
+  // A bad key is a configuration problem: it is reported, not hidden behind a template.
+  reply = { status: 400, message: 'API key not valid. Please pass a valid API key.' };
+  await assert.rejects(draft(), e => e.code === 'ai_auth_failed');
   await db.close();
 });

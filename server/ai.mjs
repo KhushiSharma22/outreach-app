@@ -78,6 +78,18 @@ const SCHEMAS = {
   assess: obj({ decision: { type: 'string', enum: ['qualified', 'review', 'excluded'] }, score: { type: 'integer' }, rationale: str, evidence_ids: strArr, missing: strArr, confidence: { type: 'string', enum: ['low', 'medium', 'high'] } }),
   draft: obj({ subject: str, body: str, evidence_ids: strArr, review_note: str }),
 };
+// Retries a call while the provider reports a temporary condition (overload, rate limit, network).
+const RETRY_DELAYS_MS = () => (process.env.AI_RETRY_DELAYS_MS ?? '800,2000').split(',').filter(Boolean).map(Number);
+async function withRetry(fn, isTransient) {
+  const delays = RETRY_DELAYS_MS();
+  for (let i = 0; ; i++) {
+    try { return await fn(); }
+    catch (e) {
+      if (i >= delays.length || !isTransient(e)) throw e;
+      await new Promise(r => setTimeout(r, delays[i] * (0.8 + Math.random() * 0.4)));
+    }
+  }
+}
 const parseJson = (op, text) => { try { return JSON.parse(text); } catch { throw new AppError(502, 'ai_invalid_output', `The AI ${op} response was not valid JSON.`); } };
 const research = (lead, evidence) => `<untrusted_research>\n${JSON.stringify({ prospect: { name: lead.name, role: lead.role, seniority: lead.seniority, company: lead.company, industry: lead.industry, employees: lead.employees, location: lead.location }, evidence: evidence.map(e => ({ id: e.id, signal: e.signal, fact: e.fact, event_date: e.event_date, source_url: e.source_url })) }, null, 1)}\n</untrusted_research>`;
 
@@ -143,6 +155,7 @@ async function loadClaude(required) {
     classifyError(e) {
       if (e instanceof Anthropic.RateLimitError) return new AppError(503, 'ai_rate_limited', 'The AI provider is rate limiting requests. The job will retry.');
       if (e instanceof Anthropic.AuthenticationError) return new AppError(503, 'ai_auth_failed', 'The AI provider rejected the configured credentials.');
+      if (e instanceof Anthropic.APIConnectionError || (e instanceof Anthropic.APIError && (e.status >= 500 || e.status === 529))) return new AppError(503, 'ai_unavailable', 'The AI provider is temporarily unavailable.');
       if (e instanceof Anthropic.APIError) return new AppError(502, 'ai_error', `AI provider error (${e.status ?? 'network'}).`);
     },
   });
@@ -154,14 +167,20 @@ async function loadGemini(required) {
   catch { if (required) throw new Error('AI_PROVIDER=gemini but @google/genai is not installed. Run npm install.'); return null; }
   const ai = new sdk.GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, ...(process.env.GEMINI_BASE_URL ? { httpOptions: { baseUrl: process.env.GEMINI_BASE_URL } } : {}) });
   const model = process.env.GEMINI_MODEL || 'gemini-flash-latest';
+  // When the main model stays overloaded, try a lighter one. Set GEMINI_FALLBACK_MODEL=none to disable.
+  const fallbackModel = process.env.GEMINI_FALLBACK_MODEL === 'none' ? null : (process.env.GEMINI_FALLBACK_MODEL || 'gemini-flash-lite-latest');
+  const transient = e => (e instanceof sdk.ApiError && [429, 500, 502, 503, 504].includes(e.status)) || (!(e instanceof sdk.ApiError) && !(e instanceof AppError) && /fetch failed|ECONNRESET|ETIMEDOUT|network/i.test(String(e?.message || e)));
   const BLOCKED = new Set(['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'RECITATION']);
   return llmProvider({
     name: 'gemini', model,
     async call(op, schema, user) {
-      const response = await ai.models.generateContent({
-        model, contents: user,
+      const generate = m => withRetry(() => ai.models.generateContent({
+        model: m, contents: user,
         config: { systemInstruction: SYSTEM, responseMimeType: 'application/json', responseJsonSchema: schema, maxOutputTokens: 16000 },
-      });
+      }), transient);
+      let response;
+      try { response = await generate(model); }
+      catch (e) { if (!fallbackModel || fallbackModel === model || !transient(e)) throw e; response = await generate(fallbackModel); }
       const finish = response.candidates?.[0]?.finishReason;
       if (response.promptFeedback?.blockReason || BLOCKED.has(finish)) throw new AppError(502, 'ai_refused', `The AI provider declined the ${op} request.`);
       if (finish === 'MAX_TOKENS') throw new AppError(502, 'ai_truncated', `The AI ${op} response was cut off.`);
@@ -170,9 +189,10 @@ async function loadGemini(required) {
       return { out, usage: { input_tokens: u.promptTokenCount, output_tokens: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0) }, model: response.modelVersion || model };
     },
     classifyError(e) {
-      if (!(e instanceof sdk.ApiError)) return;
-      if (e.status === 429) return new AppError(503, 'ai_rate_limited', 'The AI provider is rate limiting requests. The job will retry.');
-      if (e.status === 401 || e.status === 403 || (e.status === 400 && /api key/i.test(e.message))) return new AppError(503, 'ai_auth_failed', 'The AI provider rejected the configured credentials.');
+      if (!(e instanceof sdk.ApiError)) return transient(e) ? new AppError(503, 'ai_unavailable', 'The AI provider could not be reached.') : undefined;
+      if (e.status === 429) return new AppError(503, 'ai_rate_limited', 'The AI provider is rate limiting requests.');
+      if (e.status === 401 || e.status === 403 || (e.status === 400 && /api key/i.test(e.message))) return new AppError(503, 'ai_auth_failed', 'The AI provider rejected the configured API key.');
+      if (e.status >= 500) return new AppError(503, 'ai_unavailable', 'The AI provider is temporarily overloaded.');
       return new AppError(502, 'ai_error', `AI provider error (${e.status ?? 'network'}).`);
     },
   });
@@ -195,16 +215,23 @@ export const getProvider = () => (providerPromise ??= loadProvider().then(p => p
 export const offlineProvider = offline;
 export const resetProvider = () => { providerPromise = undefined; };
 
-// Wraps a provider call with logging; never logs prompts or personal data.
+// Wraps a provider call with logging; never logs prompts or personal data. When the provider is only
+// temporarily unavailable (overloaded, rate limited, unreachable), the step falls back to the offline
+// provider and the result carries `degraded` so the UI can say so. Configuration errors (bad key) and
+// refusals still surface. Set AI_FALLBACK=off to fail instead.
+const TEMPORARY = new Set(['ai_unavailable', 'ai_rate_limited']);
 export async function runAi(db, workspaceId, operation, fn) {
   const p = await getProvider(), started = Date.now();
+  const log = (status, extra) => db.insert('ai_calls', { id: id(), workspace_id: workspaceId, operation, provider: p.name, prompt_version: PROMPT_VERSION, status, latency_ms: Date.now() - started, created_at: now(), model: p.model, input_tokens: null, output_tokens: null, error: null, ...extra });
   try {
     const out = await fn(p);
-    await db.insert('ai_calls', { id: id(), workspace_id: workspaceId, operation, provider: p.name, model: out?._meta?.model || p.model, prompt_version: PROMPT_VERSION, status: 'ok', latency_ms: Date.now() - started, input_tokens: out?._meta?.usage?.input_tokens, output_tokens: out?._meta?.usage?.output_tokens, error: null, created_at: now() });
+    await log('ok', { model: out?._meta?.model || p.model, input_tokens: out?._meta?.usage?.input_tokens, output_tokens: out?._meta?.usage?.output_tokens });
     return { out, provider: p.name, model: out?._meta?.model || p.model };
   } catch (e) {
-    await db.insert('ai_calls', { id: id(), workspace_id: workspaceId, operation, provider: p.name, model: p.model, prompt_version: PROMPT_VERSION, status: 'error', latency_ms: Date.now() - started, input_tokens: null, output_tokens: null, error: String(e.message).slice(0, 300), created_at: now() });
-    throw p.classifyError?.(e) || e;
+    await log('error', { error: String(e.message).slice(0, 300) });
+    const err = p.classifyError?.(e) || e;
+    if (p === offline || !(err instanceof AppError) || !TEMPORARY.has(err.code) || process.env.AI_FALLBACK === 'off') throw err;
+    return { out: await fn(offline), provider: 'offline', model: null, degraded: `${err.message} A template was used instead.` };
   }
 }
 

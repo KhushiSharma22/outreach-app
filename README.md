@@ -39,6 +39,8 @@ To try the whole flow quickly, go to **Contacts → Load fictional sample contac
 | `AI_PROVIDER` | `auto` | `auto` (Claude if `ANTHROPIC_API_KEY` is set, else Gemini if `GEMINI_API_KEY` is set, else templates), or `claude`, `gemini`, `offline`. |
 | `GEMINI_API_KEY` | — | Enables Gemini. Get a key at aistudio.google.com/apikey. |
 | `GEMINI_MODEL` | `gemini-flash-latest` | Gemini model override. |
+| `GEMINI_FALLBACK_MODEL` | `gemini-flash-lite-latest` | Used when the main Gemini model stays overloaded; `none` disables it. |
+| `AI_FALLBACK` | on | If the AI provider is temporarily unavailable after retries, steps use templates or rules and say so. `off` makes them fail instead. |
 | `ANTHROPIC_API_KEY` | — | Enables Claude. |
 | `ANTHROPIC_MODEL` | `claude-opus-5-5` | Claude model override. |
 | `MAX_CANDIDATES_PER_RUN` | `300` | Contacts checked per discovery batch. |
@@ -84,7 +86,7 @@ How it's protected:
 - Invalid, bounced, or suppressed emails, exclusion matches, and stale or missing signals are *excluded*.
 - Unverified or catch-all emails need review when "require verified email" is on.
 
-The AI provider, if configured, then assesses contextual fit. It can only make a decision stricter. Every batch is kept. A batch below 25 qualified shows a shortfall with its most common blockers rather than padding the list. Re-running never re-adds the same person.
+The AI provider, if configured, then assesses contextual fit. If the provider is busy or rate limited, requests are retried. Gemini then tries a lighter model, and if AI is still unavailable, that step falls back to rules or templates with a visible note, so a provider outage never blocks discovery or drafting. It can only make a decision stricter. Every batch is kept. A batch below 25 qualified shows a shortfall with its most common blockers rather than padding the list. Re-running never re-adds the same person.
 
 **Drafts** have immutable revisions. Each one records its generator (AI model or template), the evidence it cites, and the context and config versions it was written with. A post-generation guard rejects AI drafts that:
 

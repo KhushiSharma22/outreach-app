@@ -107,9 +107,9 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
     if (!prompt) throw invalid('Describe the audience or campaign you have in mind.', { prompt: 'Required.' });
     if (prompt.length > 4000) throw invalid('Keep the brief under 4,000 characters.');
     const context = (await campaigns.currentContext(ctx)).data;
-    const { out, provider, model } = await runAi(db, ctx.ws, 'interpret', pr => pr.interpretBrief({ prompt, context }));
+    const { out, provider, model, degraded } = await runAi(db, ctx.ws, 'interpret', pr => pr.interpretBrief({ prompt, context }));
     const arr = v => Array.isArray(v) ? v.map(String).map(s => s.trim()).filter(Boolean).slice(0, 12) : [];
-    return { prompt, name: String(out.name || '').slice(0, 80), filters: Object.fromEntries(['roles', 'industries', 'locations', 'sizes', 'seniority', 'exclude'].map(k => [k, arr(out.filters?.[k])])), signals: arr(out.signals).filter(s => CATALOG.signals.includes(s)), notes: String(out.notes || '').slice(0, 1000), clarifications: arr(out.clarifications), summary: String(out.summary || ''), provider, model };
+    return { prompt, name: String(out.name || '').slice(0, 80), filters: Object.fromEntries(['roles', 'industries', 'locations', 'sizes', 'seniority', 'exclude'].map(k => [k, arr(out.filters?.[k])])), signals: arr(out.signals).filter(s => CATALOG.signals.includes(s)), notes: String(out.notes || '').slice(0, 1000), clarifications: arr(out.clarifications), summary: String(out.summary || ''), provider, model, degraded: degraded || null };
   });
 
   const campaignView = async (ctx, c) => ({ ...c, blockers: await delivery.blockers(ctx, c), latest_run: await db.get('SELECT * FROM discovery_runs WHERE campaign_id=? ORDER BY batch DESC LIMIT 1', [c.id]) || null, sequence: await db.get('SELECT id, status FROM sequences WHERE campaign_id=?', [c.id]) || null });

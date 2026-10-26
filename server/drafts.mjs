@@ -105,9 +105,9 @@ export async function executeDraftRun(ctx, { campaign_id, regenerate }) {
     const fresh = await ctx.db.get('SELECT d.current_revision_id, r.config_version, r.context_version_id FROM drafts d LEFT JOIN draft_revisions r ON r.id=d.current_revision_id WHERE d.lead_id=?', [l.id]);
     if (fresh?.current_revision_id && !(regenerate && (fresh.config_version !== c.config_version || fresh.context_version_id !== c.context_version_id || regenerate === 'all'))) continue;
     const lead = await shapeLead(ctx, l), evidence = lead.evidence;
-    let { out, provider, model } = await runAi(ctx.db, ctx.ws, 'draft', p => p.draftEmail({ context: c.context.data, config: c.config, lead, evidence }));
+    let { out, provider, model, degraded } = await runAi(ctx.db, ctx.ws, 'draft', p => p.draftEmail({ context: c.context.data, config: c.config, lead, evidence }));
     let problems = checkDraft(out, evidence, c.context.data.signature, [c.config.offer, c.context.data.proof]);
-    let note = out.review_note || null;
+    let note = degraded || out.review_note || null;
     if (problems.length && provider !== 'offline') {
       note = `AI draft failed checks (${problems.join(' ')}). A safe template was used instead.`;
       out = await offlineProvider.draftEmail({ context: c.context.data, config: c.config, lead, evidence });
@@ -173,8 +173,8 @@ export async function rewriteDraft(ctx, draftId, { revision_id, style }) {
   const d = await loadDraft(ctx, draftId);
   await editable(ctx, d, revision_id);
   const c = await loadCampaign(ctx, d.campaign_id), l = await getLead(ctx, d.lead_id), lead = await shapeLead(ctx, l), cur = await shapeDraft(ctx, d);
-  let { out, provider, model } = await runAi(ctx.db, ctx.ws, 'rewrite', p => p.rewriteEmail({ context: c.context.data, config: c.config, lead, draft: cur, evidence: lead.evidence, style }));
-  let problems = checkDraft(out, lead.evidence, c.context.data.signature, [c.config.offer, c.context.data.proof]), note = null;
+  let { out, provider, model, degraded } = await runAi(ctx.db, ctx.ws, 'rewrite', p => p.rewriteEmail({ context: c.context.data, config: c.config, lead, draft: cur, evidence: lead.evidence, style }));
+  let problems = checkDraft(out, lead.evidence, c.context.data.signature, [c.config.offer, c.context.data.proof]), note = degraded || null;
   if (problems.length && provider !== 'offline') { note = `AI rewrite failed checks (${problems.join(' ')}). A template rewrite was used.`; out = await offlineProvider.rewriteEmail({ context: c.context.data, config: c.config, lead, draft: cur, style }); provider = 'offline'; model = null; }
   await editable(ctx, await loadDraft(ctx, d.id), revision_id); // content may have changed while the model ran
   await saveRevision(ctx, c, l, { subject: out.subject.trim() || cur.subject, body: out.body.trim(), origin: `rewrite:${style}`, generator: { provider, model }, evidence_ids: (out.evidence_ids || []).filter(x => lead.evidence.some(e => e.id === x)), review_note: note });
