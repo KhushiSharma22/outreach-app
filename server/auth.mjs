@@ -160,7 +160,8 @@ export function createAuth({ db, publicUrl }) {
         return await signIn(out, user, 'password', req, invite.workspace_id);
       }
       const user = await createUser(db, { name, email, password_hash, company });
-      await sendVerification(user);
+      try { await sendVerification(user); }
+      catch (e) { if (e.code !== 'email_failed') throw e; throw new AppError(503, 'email_failed', `Your account was created, but ${e.message.charAt(0).toLowerCase() + e.message.slice(1)} Then sign in and choose “Send a new link”.`); }
       return { status: 'check_email' };
     },
 
