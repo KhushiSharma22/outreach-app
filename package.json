@@ -13,7 +13,8 @@
     "db:copy-sqlite": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning scripts/sqlite-to-postgres.mjs",
     "check": "for f in server/*.mjs api/*.mjs scripts/*.mjs dist/*.js; do node --check $f || exit 1; done && node -e \"JSON.parse(require('fs').readFileSync('vercel.json','utf8'))\"",
     "db:local-pg": "docker run -d --name outbound-pg -e POSTGRES_PASSWORD=devpass -p 54329:5432 postgres:17-alpine",
-    "test:browser": "node --disable-warning=ExperimentalWarning --test tests/browser.test.mjs"
+    "test:browser": "node --disable-warning=ExperimentalWarning --test tests/browser.test.mjs",
+    "setup:local": "node scripts/setup-local.mjs"
   },
   "optionalDependencies": {
     "@anthropic-ai/sdk": "^1.0.0",

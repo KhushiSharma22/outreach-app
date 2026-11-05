@@ -1,3 +1,22 @@
+## Private pilot: run your cloned copy locally
+
+Use Node.js 24 or newer. From this repository directory:
+
+```sh
+git pull --ff-only
+npm ci
+npm run setup:local
+npm start
+```
+
+Open http://127.0.0.1:4191/ (unless you already configured a different port). The setup command adds the four approved pilot email addresses to your local allowlist, creates a unique encryption key if absent, and enables local-only email verification skipping for new setups. Existing configuration and encryption keys are preserved. Sign up with your own approved email and a new password; accounts and leads from other installations are not copied.
+
+Complete Company context, then Email setup. Enter SMTP credentials only in the app; never send them in chat or commit `.env`. A Gmail app password is needed where supported by your provider. Setup alone does not connect a real mailbox or send email. AI is offline by default. Campaign SMTP sending still needs public HTTPS for unsubscribe links; local connection testing sends a test to your configured sender.
+
+This is not a public deployment. Do not use this setup command in production. Production requires its own secrets, database, verification-email service, HTTPS and explicit allowlist.
+
+---
+
 # Outbound campaign studio
 
 An email-first outbound workspace. You import prospects, qualify them against a campaign with evidence, review and approve exact email revisions, send them yourself, and run follow-up sequences timed from each recipient's own first email.
