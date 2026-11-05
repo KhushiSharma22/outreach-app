@@ -1,3 +1,4 @@
+import * as leadPools from './lead-pools.mjs';
 // HTTP API and static file server.
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -127,6 +128,29 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
   route('POST', '/api/campaigns', async (ctx, p, body) => await campaignView(ctx, await campaigns.createCampaign(ctx, body)), { status: 201 });
   route('GET', '/api/campaigns/:id', async (ctx, p) => await campaignView(ctx, await campaigns.loadCampaign(ctx, p.id)));
   route('PATCH', '/api/campaigns/:id', async (ctx, p, body) => await campaignView(ctx, await campaigns.updateCampaign(ctx, p.id, body)));
+  route('GET', '/api/admin/research-campaigns', async ctx=>{
+    if(!admin.isSuperAdmin(ctx.user.email))throw new AppError(403,'super_admin_only','Only super admins can prepare research lists.');
+    return {items:await db.all("SELECT c.id,c.name,c.workspace_id,w.name workspace,(SELECT u.email FROM users u WHERE u.workspace_id=w.id AND u.role='owner' ORDER BY u.created_at LIMIT 1) owner_email FROM campaigns c JOIN workspaces w ON w.id=c.workspace_id WHERE c.status<>'stopped' ORDER BY c.created_at DESC")};
+  });
+  route('POST', '/api/admin/campaigns/:id/research-preview', async (ctx,p,body)=>{
+    if(!admin.isSuperAdmin(ctx.user.email))throw new AppError(403,'super_admin_only','Only super admins can prepare research lists.');
+    const c=await db.get('SELECT workspace_id FROM campaigns WHERE id=?',[p.id]);if(!c)throw notFound('Campaign');
+    await campaigns.loadCampaign({...ctx,ws:c.workspace_id},p.id);
+    const {accepted,...preview}=leadPools.previewUpload(body);
+    if(preview.total>150)throw invalid('Upload at most 150 contacts per weekly file.');
+    return preview;
+  });
+  route('POST', '/api/admin/campaigns/:id/research', async (ctx,p,body)=>{
+    if(!admin.isSuperAdmin(ctx.user.email))throw new AppError(403,'super_admin_only','Only super admins can prepare research lists.');
+    const c=await db.get('SELECT workspace_id FROM campaigns WHERE id=?',[p.id]);if(!c)throw notFound('Campaign');
+    const preview=leadPools.previewUpload(body);
+    if(preview.total>150)throw invalid('Upload at most 150 contacts per weekly file.');
+    if(preview.errors.length||!preview.valid)throw invalid('Fix invalid rows before uploading research.');
+    return leadPools.seedResearch({...ctx,ws:c.workspace_id},p.id,body);
+  },{status:201,idem:true});
+  route('GET', '/api/campaigns/:id/sources', async (ctx,p)=>leadPools.sourceStatus(ctx,p.id));
+  route('POST', '/api/campaigns/:id/import-preview', async (ctx,p,body)=>{await campaigns.loadCampaign(ctx,p.id);const {accepted,...preview}=leadPools.previewUpload(body);return preview;});
+  route('POST', '/api/campaigns/:id/imports', async (ctx,p,body)=>leadPools.uploadForCampaign(ctx,p.id,body), {status:201,idem:true});
   route('POST', '/api/campaigns/:id/discovery-runs', async (ctx, p) => await sourcing.startDiscovery(ctx, p.id), { idem: true, status: 202 });
   route('GET', '/api/campaigns/:id/batches', async (ctx, p) => ({ items: await sourcing.listRuns(ctx, p.id) }));
   route('GET', '/api/runs/:id', async (ctx, p) => await sourcing.getRun(ctx, p.id));

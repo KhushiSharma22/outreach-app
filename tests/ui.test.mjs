@@ -55,8 +55,8 @@ test('every screen renders from the API, and the full manual-send journey works 
   assert.deepEqual([...run('S.c.config.filters.sizes')], ['11–50', '51–200']);
 
   await run('continueFlow()');                 // → discovery settings
-  assert.match(html(), /Build your discovery engine/);
-  await run(`saveCampaign({config:{signals:['Hiring','Funding','New leadership','Expansion']}},{now:true})`);
+  assert.match(html(), /Find your next customers/);
+  await run(`saveCampaign({config:{source:'import',signals:['Hiring','Funding','New leadership','Expansion']}},{now:true})`);
   await run('continueFlow()');                 // → review leads
   await run('discoverBatch()');
   await settle(); await until(() => run('S.leads && S.leads.selected') > 0 && html().includes('discovery-hero'));
@@ -98,4 +98,18 @@ test('every screen renders from the API, and the full manual-send journey works 
   await run(`openCampaign(S.cid,'tracking')`);
   await run(`insightTab('activity')`);
   assert.match(html(), /Follow-up sequence launched/);
+});
+
+test('campaign CSV journey previews, imports and reviews customer contacts',async()=>{
+ const c=await run(`Api.post('/api/campaigns',{name:'Customer upload',source:'upload',brief:{filters:{roles:['Founder'],locations:['India']},signals:[]}})`);
+ await run(`openCampaign('${c.id}','builder')`);
+ await run('continueFlow()');
+ assert.match(html(),/Research Leads/);assert.match(html(),/Import your own contacts/);
+ const csv='first_name,last_name,email,company,role,employees,location\nAsha,Example,asha@upload.example,Upload Co,Founder,5,India';
+ await run(`previewCampaignFile({files:[{name:'contacts.csv',size:200,text:async()=>${JSON.stringify(csv)}}]})`);
+ assert.match(html(),/1 contacts ready/);
+ await run('confirmCampaignImport()');assert.match(html(),/1 contacts added to this campaign/);
+ await run('requestSourceLeads()');await settle();
+ await until(()=>run('S.leads && S.leads.counts.review')===1 && html().includes('Needs review'));
+ assert.match(html(),/Needs review/);
 });

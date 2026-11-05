@@ -63,7 +63,6 @@ To try the whole flow quickly, sign in with an address in `OPERATOR_EMAILS` and 
 | `ANTHROPIC_API_KEY` | — | Enables Claude. |
 | `ANTHROPIC_MODEL` | `claude-opus-5-5` | Claude model override. |
 | `MAX_CANDIDATES_PER_RUN` | `300` | Contacts checked per discovery batch. |
-| `MAX_AI_ASSESSMENTS_PER_RUN` | `40` | Cost cap on AI fit assessments per batch. |
 | `SCHEDULER_INTERVAL_MS` | `30000` | How often the daily scheduler checks. |
 | `PUBLIC_URL` | `http://127.0.0.1:PORT` | Address users reach. Used in email links and the Google redirect; `https://` turns on secure cookies. Required when binding beyond localhost. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SECURE` | — | SMTP server for confirmation, reset, and invite emails (port 465 implies TLS). Required when binding beyond localhost. |
@@ -110,7 +109,7 @@ How it's protected:
 - Invalid, bounced, or suppressed emails, exclusion matches, and stale or missing signals are *excluded*.
 - Unverified or catch-all emails need review when "require verified email" is on.
 
-The AI provider, if configured, then assesses contextual fit. If the provider is busy or rate limited, requests are retried. Gemini then tries a lighter model, and if AI is still unavailable, that step falls back to rules or templates with a visible note, so a provider outage never blocks discovery or drafting. It can only make a decision stricter. Every batch is kept. A batch below 25 qualified shows a shortfall with its most common blockers rather than padding the list. Re-running never re-adds the same person.
+Discovery uses deterministic checks only; no LLM fit assessment or blended AI score is run. AI is reserved for campaign interpretation, initial email drafting and rewriting. Temporary provider failures can fall back to labelled templates; authentication errors still surface. Every batch is kept, and a below-target batch shows a shortfall rather than padding the list.
 
 **Drafts** have immutable revisions. Each one records its generator (AI model or template), the evidence it cites, and the context and config versions it was written with. A post-generation guard rejects AI drafts that:
 
@@ -241,3 +240,35 @@ These items from the handoff remain open:
 - **Data retention and deletion policies.**
 
 `.openai/hosting.json` refers to the old static-only hosting. The app now needs the Node server, so a static deployment of `dist/` will show a connection error.
+
+
+### Campaign lead sources (November 2026)
+
+New campaigns offer **Research Leads** and **Import your own contacts**. Existing campaigns keep their previous import discovery behavior until their source is changed.
+
+Research uses a campaign-specific prepared list, with current targeting and suppression checks repeated on request. No live web search is performed. Customers see matching contact availability, without operator upload details. One research campaign may allocate leads per workspace per UTC day, up to its selected target (1–30). Partial batches consume only the contacts allocated, so additional matching contacts can fill the remaining allowance. Empty requests consume no allowance. Research is available on at most five days per Monday–Sunday UTC week; unused days do not roll over. Previously allocated contacts cannot be allocated again across campaigns.
+
+Customer uploads are campaign-specific and independent of the research allowance. Each discovery run reviews up to the selected target. Download `/contact-import-template.csv`: required headers are `first_name,last_name,email,company`; last-name values may be blank. Optional fields include role, employees, location, industry, domain and linkedin_url. Preview accepts up to 5,000 rows / 5 MB, reports invalid rows, and skips repeated email addresses. Invalid rows must be corrected before import. Customer-supplied verification and signal assertions are ignored; new email addresses need verification or manual review. Imports never send email.
+
+#### Preparing weekly research (operators)
+
+In the super-admin page, open **Weekly research leads**, choose the customer workspace (identified by owner email) and campaign, then set the earliest availability date. Download the research template, choose a CSV of up to 150 rows, review the format preview and destination, and confirm the upload. Preview does not import records; final qualification runs on upload. Use the existing operator import format, including `email_status`, audience fields and, if campaign signals require them, signal evidence. Mark `email_status=valid` only after genuine email verification. The result reports ready contacts and those that did not qualify. The same action is available from a trusted server terminal:
+
+```sh
+node --env-file-if-exists=.env scripts/seed-research.mjs WORKSPACE_ID CAMPAIGN_ID leads.csv YYYY-MM-DD
+```
+
+Prepare up to 150 unique qualifying contacts for a five-day week, either available from the start or in separately dated batches. Replenish as needed for suppressions and changed targeting; the engine never pads shortages. Weekly seeding itself is an operator action, not an automated research service. Current targeting and suppression checks can still remove a prepared contact during discovery. A customer account cannot call the research preparation endpoint.
+
+Startup creates the additive `campaign_contact_pool`, `campaign_contact_claims` and `research_days` tables for SQLite or PostgreSQL. Deploy backend and frontend together and restart the server. Keep the existing database and environment configuration; no reset or credential changes are required.
+
+
+### Personalised AI writing
+
+Shared prompts live in `server/ai-prompts.mjs`, version `2026-11-06.1`. Both Claude and Gemini receive campaign notes, ICP, offering, proof points, writing preferences, signature, explicit prospect first name and company details. Drafting and rewriting receive up to 20 most recently collected contact/company evidence records, independent of whether an event signal was required for qualification. Records are framed as untrusted data and delimiter characters are escaped.
+
+For operator-prepared research CSVs, `research_fact` (alias of `signal_fact`) can contain a specific factual product/service/customer observation, and `research_url` (alias of `signal_url`) its source. Leave `signal` blank for general company research. Include dates for events. These aliases do not enable customer imports to assert verification or research evidence. The model does not fetch these URLs or perform live browsing. No research means restrained company/role-based copy and an internal review note, not invented personalisation.
+
+Prompts require natural, concise one-to-one language, one supported observation, one relevant value proposition and one low-pressure CTA. Rewrites preserve supported personalisation and receive the same writing constraints. Guards enforce structure, a body under 140 words before the signature, and the complete signature at the end, in addition to existing signal and placeholder checks. These checks are not comprehensive fact verification; exact wording still requires user approval.
+
+To enable live generation set `AI_PROVIDER=gemini` with `GEMINI_API_KEY`, or `AI_PROVIDER=claude` with the provider credentials and an available `ANTHROPIC_MODEL`, in server environment settings. Restart the backend. Never commit credentials. Without credentials keep `AI_PROVIDER=offline`; templates are not live AI. Follow-up sequences remain editable templates in this release.

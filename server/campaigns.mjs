@@ -45,7 +45,7 @@ export function defaultConfig(context) {
   return {
     offer: context.offering,
     filters: { roles: [], industries: [], locations: [], sizes: [], seniority: [], exclude: ['Existing customers', 'Competitors', 'Active opportunities'] },
-    notes: '', source: 'import', sourceRef: '', signals: ['Hiring', 'Funding'], freshness: 30,
+    notes: '', source: 'research', sourceRef: '', signals: ['Hiring', 'Funding'], freshness: 30,
     min: 25, target: 28, quality: 80, requireVerifiedEmail: true,
     writing: { tone: context.tone, length: 'Balanced', angle: 'Signal-led', cta: 'Start a conversation' },
     schedule: { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], time: '09:00', timezone: 'Asia/Kolkata' },
@@ -58,11 +58,12 @@ export function normalizeConfig(base, patch = {}) {
   if ('offer' in patch) c.offer = String(patch.offer || '').trim();
   if (patch.filters) for (const k of Object.keys(c.filters)) if (k in patch.filters) c.filters[k] = arr(patch.filters[k]);
   if ('notes' in patch) c.notes = String(patch.notes || '').slice(0, 2000);
-  if ('source' in patch) c.source = ['import', 'salesnav'].includes(patch.source) ? patch.source : c.source;
+  if ('source' in patch) c.source = ['research', 'upload', 'import', 'salesnav'].includes(patch.source) ? patch.source : c.source;
   if ('sourceRef' in patch) c.sourceRef = String(patch.sourceRef || '').slice(0, 500);
   if ('signals' in patch) c.signals = arr(patch.signals).filter(s => CATALOG.signals.includes(s));
   if ('freshness' in patch) c.freshness = [7, 30, 90].includes(+patch.freshness) ? +patch.freshness : c.freshness;
-  if ('target' in patch) c.target = Math.min(30, Math.max(25, Math.round(+patch.target || 25)));
+  if ('target' in patch) c.target = Math.min(30, Math.max(1, Math.round(+patch.target || 1)));
+  c.min = Math.min(c.min, c.target);
   if ('quality' in patch) c.quality = Math.min(95, Math.max(70, Math.round(+patch.quality || 80)));
   if ('requireVerifiedEmail' in patch) c.requireVerifiedEmail = !!patch.requireVerifiedEmail;
   if (patch.writing) {
@@ -110,10 +111,11 @@ export async function listCampaigns(ctx) {
     FROM campaigns c WHERE c.workspace_id=? ORDER BY c.created_at DESC`, [ctx.ws]))
     .map(async c => ({ ...c, config: await configRow(ctx, c.id, c.config_version) })));
 }
-export async function createCampaign(ctx, { name, prompt = '', brief } = {}) {
+export async function createCampaign(ctx, { name, prompt = '', brief, source } = {}) {
   const context = await currentContext(ctx);
   if (!context) throw new AppError(409, 'missing_context', 'Save your company context first.');
   let config = defaultConfig(context.data);
+  if (['import','salesnav','research','upload'].includes(source)) config.source=source;
   // An interpreted brief is applied only as the user confirmed it; the original prompt is kept verbatim.
   if (brief) config = normalizeConfig(config, { filters: brief.filters, signals: Array.isArray(brief.signals) ? brief.signals : config.signals, notes: brief.notes });
   const t = now(), c = { id: id(), workspace_id: ctx.ws, name: String(name || brief?.name || 'Untitled campaign').trim().slice(0, 120) || 'Untitled campaign', prompt: String(prompt).slice(0, 4000), status: 'draft', step: 0, context_version_id: context.id, config_version: 1, revision: 1, launched_at: null, created_at: t, updated_at: t };

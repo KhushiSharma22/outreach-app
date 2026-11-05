@@ -1,9 +1,10 @@
 // Sourcing: CSV import with identity resolution, deterministic eligibility checks,
-// optional AI contextual assessment, and persisted discovery batches.
+// deterministic qualification and persisted discovery batches.
 import { id, now, hash } from './db.mjs';
 import { AppError, notFound, invalid, conflict, json, parseCsv, EMAIL_RE, normEmail, normDomain, normLinkedin, localView } from './lib.mjs';
-import { CATALOG, runAi, sizeBuckets } from './ai.mjs';
+import { CATALOG, sizeBuckets } from './ai.mjs';
 import { loadCampaign } from './campaigns.mjs';
+import { startCampaignDiscovery } from './lead-pools.mjs';
 
 // ---------- Import ----------
 const HEADERS = {
@@ -14,14 +15,14 @@ const HEADERS = {
   industry: ['industry'], employees: ['employees', 'company_size', 'company size', 'headcount', 'employee count', 'size'],
   location: ['location', 'country', 'region', 'city'], linkedin_url: ['linkedin_url', 'linkedin', 'linkedin url', 'profile url', 'person linkedin url'],
   relationship: ['relationship', 'account status', 'status', 'tags'],
-  signal: ['signal', 'signal type', 'signal_type', 'trigger'], signal_fact: ['signal_fact', 'signal fact', 'evidence', 'signal detail'],
-  signal_date: ['signal_date', 'signal date', 'event date', 'event_date'], signal_url: ['signal_url', 'source', 'source url', 'signal source', 'evidence url'],
+  signal: ['signal', 'signal type', 'signal_type', 'trigger'], signal_fact: ['signal_fact', 'signal fact', 'evidence', 'signal detail', 'research_fact', 'company_research'],
+  signal_date: ['signal_date', 'signal date', 'event date', 'event_date'], signal_url: ['signal_url', 'source', 'source url', 'signal source', 'evidence url', 'research_url'],
 };
 const EMAIL_STATUSES = { valid: 'valid', verified: 'valid', deliverable: 'valid', ok: 'valid', invalid: 'invalid', undeliverable: 'invalid', bounced: 'invalid', 'catch-all': 'catch_all', catch_all: 'catch_all', catchall: 'catch_all', 'accept-all': 'catch_all', unknown: 'unknown', risky: 'unknown', unverified: 'unverified', '': 'unverified' };
 const SIGNAL_ALIASES = { hiring: 'Hiring', 'job opening': 'Hiring', jobs: 'Hiring', funding: 'Funding', fundraise: 'Funding', 'funding round': 'Funding', 'new leadership': 'New leadership', leadership: 'New leadership', 'new hire': 'New leadership', expansion: 'Expansion', expanding: 'Expansion' };
 const MAX_ROWS = 5000;
 
-export async function importCsv(ctx, { filename = 'import.csv', csv, source = 'csv' }) {
+export async function importCsv(ctx, { filename = 'import.csv', csv, source = 'csv' }, importedIds = null) {
   if (typeof csv !== 'string' || !csv.trim()) throw invalid('Choose a CSV file with a header row.');
   if (csv.length > 5_000_000) throw invalid('CSV files are limited to 5 MB.');
   if (/^\s*PK|^\s*%PDF|<html/i.test(csv.slice(0, 20))) throw invalid('This file is not a CSV. Export your list as comma-separated values and try again.');
@@ -75,6 +76,7 @@ export async function importCsv(ctx, { filename = 'import.csv', csv, source = 'c
         await ctx.db.insert('contacts', { id: contactId, workspace_id: ctx.ws, ...fields, linkedin_url: linkedin, email, email_status: emailStatus, email_verifier: statusKey ? 'import' : null, email_checked_at: statusKey ? t : null, source_import_id: imp.id, created_at: t, updated_at: t });
         imp.created_count++;
       }
+      if (importedIds) importedIds.push(contactId);
       const fact = v('signal_fact'), signal = SIGNAL_ALIASES[v('signal').toLowerCase()] || null;
       if (v('signal') && !signal) rejected.push({ line, reason: `Contact imported; unrecognized signal "${v('signal')}" was ignored. Use Hiring, Funding, New leadership, or Expansion.`, partial: true });
       if (fact || signal) {
@@ -175,6 +177,7 @@ const exclusionList = text => (text || '').toLowerCase().split(/[,;\n]/).map(s =
 // ---------- Discovery runs ----------
 export async function startDiscovery(ctx, campaignId, { trigger = 'manual', occurrenceDate = null } = {}) {
   const c = await loadCampaign(ctx, campaignId);
+  if (['research','upload'].includes(c.config.source)) return startCampaignDiscovery(ctx,c,{trigger,occurrenceDate});
   if (c.status === 'stopped') throw conflict('campaign_stopped', 'This campaign is stopped.');
   if (!c.config.filters.roles.length && !c.config.filters.industries.length) throw invalid('Choose at least one job role or industry so discovery has an audience.', { filters: 'Required.' });
   let runId;
@@ -213,6 +216,7 @@ async function unallocatedContacts(ctx,campaignId,limit) {
  return await ctx.db.all(`SELECT ct.id FROM contacts ct WHERE ct.workspace_id=?
  AND NOT EXISTS (SELECT 1 FROM pilot_contacts pc WHERE pc.workspace_id=ct.workspace_id AND pc.contact_id=ct.id)
  AND NOT EXISTS (SELECT 1 FROM campaign_leads l WHERE l.campaign_id=? AND l.contact_id=ct.id)
+ AND NOT EXISTS (SELECT 1 FROM campaign_contact_pool p WHERE p.workspace_id=ct.workspace_id AND p.contact_id=ct.id)
  ORDER BY ct.created_at,ct.id LIMIT ?`,[ctx.ws,campaignId,limit]);
 }
 
@@ -224,7 +228,6 @@ export async function getRun(ctx, runId) {
 export const listRuns = async (ctx, campaignId) => { await loadCampaign(ctx, campaignId); return (await ctx.db.all('SELECT * FROM discovery_runs WHERE campaign_id=? ORDER BY batch DESC', [campaignId])).map(r => ({ ...r, progress: json(r.progress) })); };
 
 const MAX_CANDIDATES = () => +(process.env.MAX_CANDIDATES_PER_RUN || 300);
-const MAX_AI_ASSESSMENTS = () => +(process.env.MAX_AI_ASSESSMENTS_PER_RUN || 40);
 
 export async function executeDiscovery(ctx, runId) {
   const run = await getRun(ctx, runId);
@@ -234,6 +237,8 @@ export async function executeDiscovery(ctx, runId) {
   // A retried run restarts cleanly: drop leads it created that have no downstream work.
   await ctx.db.run('DELETE FROM campaign_leads WHERE run_id=? AND id NOT IN (SELECT lead_id FROM drafts)', [run.id]);
   const today = localView(Date.now(), config.schedule.timezone || 'UTC').date;
+  const scoped=['research','upload'].includes(config.source);
+  if (!scoped) {
   // Compatibility for a run queued by an older deployment before contacts were reserved.
   await ctx.db.tx(async()=>{
     await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
@@ -243,34 +248,21 @@ export async function executeDiscovery(ctx, runId) {
       for (const contact of await unallocatedContacts(ctx,c.id,remaining)) await ctx.db.insert('pilot_contacts',{workspace_id:ctx.ws,contact_id:contact.id,run_id:run.id});
     }
   });
+  }
   const candidates = await ctx.db.all(`SELECT ct.*, co.name company, co.domain, co.industry, co.employees, co.location company_location, co.relationship,
       s.reason suppressed,
       (SELECT c2.name FROM messages m JOIN campaigns c2 ON c2.id=m.campaign_id WHERE m.contact_id=ct.id AND m.campaign_id<>:cid LIMIT 1) other_campaign
-    FROM pilot_contacts pc JOIN contacts ct ON ct.id=pc.contact_id AND ct.workspace_id=pc.workspace_id
+    FROM ${scoped ? 'campaign_contact_claims' : 'pilot_contacts'} pc JOIN contacts ct ON ct.id=pc.contact_id AND ct.workspace_id=pc.workspace_id
     JOIN companies co ON co.id=ct.company_id
     LEFT JOIN suppressions s ON s.workspace_id=ct.workspace_id AND s.email=ct.email
     WHERE pc.workspace_id=:ws AND pc.run_id=:rid ORDER BY ct.created_at,ct.id`,{ws:ctx.ws,cid:c.id,rid:run.id});
   const progress = async p => await ctx.db.run('UPDATE discovery_runs SET progress=? WHERE id=?', [JSON.stringify(p), run.id]);
   await progress({ stage: 'checking', checked: 0, total: candidates.length });
   const assessed = [];
-  let aiBudget = MAX_AI_ASSESSMENTS();
   for (const [i, cand] of candidates.entries()) {
     cand.name = `${cand.first_name} ${cand.last_name}`.trim();
     const evidence = await ctx.db.all('SELECT * FROM evidence WHERE workspace_id=? AND (contact_id=? OR (company_id=? AND contact_id IS NULL)) ORDER BY event_date DESC', [ctx.ws, cand.id, cand.company_id]);
-    let result = checkCandidate(ctx, config, c.context.data, cand, evidence, today), by = 'rules';
-    if (result.decision === 'qualified' && aiBudget > 0) {
-      aiBudget--;
-      const { out, provider, model } = await runAi(ctx.db, ctx.ws, 'assess', p => p.assessLead({ context: c.context.data, config, lead: cand, evidence, checks: result.checks }));
-      if (out) {
-        // The model may only make a decision stricter; hard checks and email status stay authoritative.
-        const aiScore = Math.max(0, Math.min(100, Math.round(out.score)));
-        const score = Math.round((result.score + aiScore) / 2);
-        const decision = out.decision !== 'qualified' ? out.decision : score < config.quality ? 'review' : 'qualified';
-        const ids = (out.evidence_ids || []).filter(x => evidence.some(e => e.id === x));
-        result = { ...result, decision, score, rationale: String(out.rationale || result.rationale).slice(0, 500), evidence_ids: ids.length ? ids : result.evidence_ids, missing: [...result.missing, ...(out.missing || [])].slice(0, 10), confidence: out.confidence };
-        by = `rules+${provider}:${model}`;
-      }
-    }
+    let result = checkCandidate(ctx, config.source==='research'?{...config,requireVerifiedEmail:true}:config, c.context.data, cand, evidence, today), by = 'rules';
     assessed.push({ cand, result, by });
     if (i % 5 === 4) await progress({ stage: 'checking', checked: i + 1, total: candidates.length });
   }

@@ -13,7 +13,6 @@ const LEAD_SELECT = `SELECT l.*, ct.first_name, ct.last_name, ct.role, ct.senior
   FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id JOIN companies co ON co.id=ct.company_id JOIN discovery_runs r ON r.id=l.run_id
   JOIN campaigns c ON c.id=l.campaign_id LEFT JOIN suppressions s ON s.workspace_id=c.workspace_id AND s.email=ct.email LEFT JOIN drafts d ON d.lead_id=l.id`;
 export async function shapeLead(ctx, l, withEvidence = true) {
-  const ev = json(l.evidence_ids) || [];
   return {
     id: l.id, campaign_id: l.campaign_id, contact_id: l.contact_id, run_id: l.run_id, batch: l.batch,
     name: `${l.first_name} ${l.last_name}`.trim(), first_name: l.first_name, role: l.role, seniority: l.seniority, email: l.email, email_status: l.email_status, linkedin_url: l.linkedin_url,
@@ -21,7 +20,7 @@ export async function shapeLead(ctx, l, withEvidence = true) {
     decision: l.decision, score: l.score, rationale: l.rationale, checks: json(l.checks), missing: json(l.missing), confidence: l.confidence, assessed_by: l.assessed_by,
     selected: !!l.selected, override_by: l.override_by, override_reason: l.override_reason, suppressed: l.suppressed,
     draft_id: l.draft_id, approved: !!l.approved, send_status: l.send_status,
-    evidence: withEvidence && ev.length ? await ctx.db.all(`SELECT id, signal, fact, source_url, event_date, collected_at, provenance FROM evidence WHERE workspace_id=? AND id IN (${ev.map(() => '?').join(',')})`, [ctx.ws, ...ev]) : [],
+    evidence: withEvidence ? await ctx.db.all('SELECT id, signal, fact, source_url, event_date, collected_at, provenance FROM evidence WHERE workspace_id=? AND (contact_id=? OR (company_id=? AND contact_id IS NULL)) ORDER BY collected_at DESC LIMIT 20', [ctx.ws,l.contact_id,l.company_id]) : [],
   };
 }
 export async function listLeads(ctx, campaignId, { run_id, decision, q, page = 0, page_size = 7, selected } = {}) {

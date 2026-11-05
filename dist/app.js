@@ -73,7 +73,7 @@ async function navigate(next) {
 }
 async function openCampaign(id, view) {
   clearTimeout(pollTimer);
-  Object.assign(S, { cid: id, c: null, leads: null, drafts: null, metrics: null, runs: [], runId: 'all', lq: { decision: 'qualified', q: '', page: 0 }, messageLead: null, insightTab: 'overview', error: '', modal: null });
+  Object.assign(S, { cid: id, c: null, leads: null, drafts: null, metrics: null, runs: [], sources: null, uploadPreview: null, uploadFile: null, uploadBusy: false, importResult: null, runId: 'all', lq: { decision: 'qualified', q: '', page: 0 }, messageLead: null, insightTab: 'overview', error: '', modal: null });
   S.view = view || 'builder'; render(); window.scrollTo(0, 0);
   try {
     await refreshCampaign();
@@ -87,6 +87,7 @@ async function refreshCampaign() { if (S.cid) S.c = await Api.get(`/api/campaign
 async function loadViewData() {
   const c = S.c;
   if (S.view === 'builder') {
+    if ([1,2].includes(c.step)) await loadSourceStatus();
     if (c.step === 2) { await loadRuns(); await loadLeads(); }
     if (c.step === 3) await loadDrafts(true);
     if (c.step === 5) S.drafts = await Api.get(`/api/campaigns/${c.id}/drafts`);
@@ -218,7 +219,7 @@ function builderView() {
   return `<button class="back-link" onclick="navigate('campaigns')">← All campaigns</button><div class="heading"><div><div class="eyebrow">CAMPAIGN STUDIO</div><h1>${esc(c.name)}</h1><p>Find the right people. Give them a reason to reply.</p></div><div class="inline"><span class="helper" id="save-state" style="margin:0"></span>${badge('Email campaign', 'green')}</div></div>
   <div class="step-nav">${flowSteps.map((s, i) => `<button class="${c.step === i ? 'active' : i < c.step ? 'done' : ''}" onclick="goStep(${i})" ${i > c.step ? 'disabled' : ''}><span class="step-num">${i < c.step ? '✓' : i + 1}</span><span class="step-label">${s}</span></button>`).join('')}</div>
   <div class="${full ? '' : 'wizard-grid'}"><div>${[briefView, discoveryView, reviewView, studioView, scheduleView, launchView][c.step](c)}${S.error ? `<div class="error" role="alert">${esc(S.error)}</div>` : ''}</div>${full ? '' : summaryView(c)}</div>
-  <div class="footer-actions"><span class="helper">${icon('shield')} You send every email yourself; nothing is sent automatically.</span><div class="inline">${c.step ? '<button onclick="goStep(current().step-1)">Back</button>' : ''}<button class="primary" onclick="continueFlow()" ${S.busy ? 'disabled' : ''}>${['Configure discovery', 'Review leads', 'Create emails', 'Set schedule', 'Review campaign', 'Launch campaign'][c.step]} ${icon('arrow')}</button></div></div>`;
+  <div class="footer-actions"><span class="helper">${icon('shield')} You send every email yourself; nothing is sent automatically.</span><div class="inline">${c.step ? '<button onclick="goStep(current().step-1)">Back</button>' : ''}<button class="primary" onclick="continueFlow()" ${S.busy || (c.step === 2 && (!S.leads?.selected || S.runs.some(r=>['queued','running'].includes(r.status)))) ? 'disabled' : ''}>${['Configure discovery', 'Review leads', 'Create emails', 'Set schedule', 'Review campaign', 'Launch campaign'][c.step]} ${icon('arrow')}</button></div></div>`;
 }
 async function goStep(n) {
   await flushSave();
@@ -241,7 +242,7 @@ async function continueFlow() {
   return goStep(c.step + 1);
 }
 function summaryView(c) {
-  return `<aside class="wizard-aside"><div class="panel"><h2 style="font-size:14px">Campaign at a glance</h2>${[['Workspace', S.context.data.company], ['Context', `${c.prompt ? 'Assistant brief + ' : ''}company context v${c.context.version}`], ['Lead source', c.config.source === 'salesnav' ? 'Sales Navigator export (CSV import)' : 'Imported contacts'], ['Daily goal', `${c.config.target} leads · 25–30 range`], ['Quality threshold', `${c.config.quality}/100 minimum fit`], ['Sender identity', c.context.data.email]].map(([k, v]) => `<div class="summary-row"><small>${k}</small><p>${esc(v)}</p></div>`).join('')}${c.context.version !== S.context.version ? `<button class="small ghost" onclick="useLatestContext()">Use latest company context (v${S.context.version})</button>` : ''}</div><div class="note">${icon('spark')}<span>Strong fit comes first. If fewer than 25 leads qualify, you’ll see the shortfall instead of a lower bar.</span></div></aside>`;
+  return `<aside class="wizard-aside"><div class="panel"><h2 style="font-size:14px">Campaign at a glance</h2>${[['Workspace', S.context.data.company], ['Context', `${c.prompt ? 'Assistant brief + ' : ''}company context v${c.context.version}`], ['Lead source', c.config.source === 'research' ? 'Research Leads' : 'Your contacts'], ['Daily goal', `${c.config.target} leads · up to 30 per day`], ['Quality threshold', `${c.config.quality}/100 minimum fit`], ['Sender identity', c.context.data.email]].map(([k, v]) => `<div class="summary-row"><small>${k}</small><p>${esc(v)}</p></div>`).join('')}${c.context.version !== S.context.version ? `<button class="small ghost" onclick="useLatestContext()">Use latest company context (v${S.context.version})</button>` : ''}</div><div class="note">${icon('spark')}<span>Strong fit comes first. If fewer than your target qualify, you’ll see the shortfall instead of a lower bar.</span></div></aside>`;
 }
 async function useLatestContext() {
   try { await flushSave(); S.c = await Api.patch(`/api/campaigns/${S.cid}`, { revision: S.c.revision, context: 'latest' }); toast('Campaign now uses your latest company context. Regenerate drafts to apply it.'); render(); } catch (e) { fail(e); }
@@ -255,7 +256,7 @@ function briefView(c) {
   return `<div class="stack"><section class="panel"><div class="panel-header"><div><h2>Give your campaign a direction</h2><p>Choose your audience using filters. Add context only where it helps.</p></div>${icon('campaign')}</div>${field('Campaign name', 'name', c.name, false, 'saveCampaign({name:this.value})')}${field('Your offering', 'offer', c.config.offer, true)}${c.prompt ? `<div class="context-banner">${icon('spark')}<div><strong>Your original assistant brief</strong><p>${esc(c.prompt)}</p></div></div>` : ''}</section>
   <section class="panel"><div class="panel-header"><div><h2>Who’s the right fit?</h2><p>Match any selection within a group, and all selected groups. Missing data never counts as a match.</p></div>${badge('Structured targeting', 'green')}</div>
   ${FILTER_GROUPS.map(([label, key]) => `<div class="field"><label>${label}</label><div class="signals">${[...new Set([...(cat[key] || []), ...f[key]])].map(x => `<button class="${f[key].includes(x) ? 'selected' : ''}" data-filter-group="${key}" data-filter-value="${esc(x)}" onclick="toggleAudienceFilter(this.dataset.filterGroup,this.dataset.filterValue)" aria-pressed="${f[key].includes(x)}">${f[key].includes(x) ? '✓' : '+'} ${esc(x)}</button>`).join('')}</div>${key === 'sizes' || key === 'seniority' ? '' : `<div class="inline" style="margin-top:10px"><input id="custom-${key}" aria-label="Custom ${label}" placeholder="Add another ${label.toLowerCase()}…"><button class="small" onclick="addAudienceFilter('${key}')">Add</button></div>`}</div>`).join('')}
-  <div class="field"><label for="audience-notes">Additional context (optional)</label><textarea id="audience-notes" placeholder="For example, prioritize companies building their first outbound team." oninput="saveCampaign({config:{notes:this.value}});$('audience-summary').textContent=filterSummary(current())">${esc(c.config.notes)}</textarea><p class="helper">Notes guide AI fit assessment and writing; they never override filters or exclusions.</p></div>
+  <div class="field"><label for="audience-notes">Additional context (optional)</label><textarea id="audience-notes" placeholder="For example, prioritize companies building their first outbound team." oninput="saveCampaign({config:{notes:this.value}});$('audience-summary').textContent=filterSummary(current())">${esc(c.config.notes)}</textarea><p class="helper">Notes guide email personalisation; they never override filters or exclusions.</p></div>
   <div class="notice"><span><strong>Your audience summary</strong><br><span id="audience-summary">${esc(filterSummary(c))}</span></span></div></section></div>`;
 }
 function filterSummary(c) {
@@ -266,19 +267,49 @@ function toggleAudienceFilter(k, v) { const f = clone(current().config.filters);
 function addAudienceFilter(k) { const v = $('custom-' + k).value.trim(); if (!v) return; const f = clone(current().config.filters); if (!f[k].includes(v)) f[k].push(v); saveCampaign({ config: { filters: f } }); render(); }
 
 function discoveryView(c) {
-  const cfg = c.config, contacts = S.summary?.contacts ?? 0;
-  return `<div class="stack"><section class="panel"><div class="panel-header"><div><h2>Build your discovery engine</h2><p>Choose where prospects come from and why they belong.</p></div>${icon('people')}</div><label>Prospect source</label>
-  <div class="choice-grid"><button class="choice ${cfg.source === 'import' ? 'active' : ''}" onclick="saveCampaign({config:{source:'import'}});render()"><span class="title">${icon('download')} AI Research</span><p>Pilot: evaluate your team-curated lead pool against campaign criteria. Up to 30 contacts per UTC day, for five days within seven days. No live web discovery.</p>${badge(`${contacts} in workspace`, 'green')}</button>
-  <button class="choice ${cfg.source === 'salesnav' ? 'active' : ''}" onclick="saveCampaign({config:{source:'salesnav'}});render()"><span class="title">${icon('linkedin')} Sales Navigator export</span><p>Import a list exported through a method your subscription permits. Emails come from separate enrichment.</p>${badge('CSV import')}</button></div>
-  <div class="choice" style="margin-top:12px;opacity:.6;cursor:not-allowed" aria-disabled="true"><span class="title">${icon('spark')} AI web research</span><p>Automated research needs an authorized search and enrichment provider. Not connected yet.</p>${badge('Unavailable')}</div>
-  ${cfg.source === 'salesnav' ? `<div class="spacer"></div>${field('Saved search or list reference (optional)', 'sourceRef', cfg.sourceRef)}<div class="notice">${icon('shield')}This reference is kept for your records. The app never logs in to LinkedIn or scrapes profiles.</div>` : ''}
-  <div class="toolbar" style="margin-top:16px"><span class="subtle">${contacts ? `${plural(contacts, 'contact')} available to check.` : 'No contacts yet — import a CSV to discover leads.'}</span><button class="small" onclick="navigate('contacts')">${icon('download')} Import contacts</button></div>
-  <div class="source-flow"><span>Import prospects</span>${icon('arrow')}<span>Check filters & email</span>${icon('arrow')}<span>Assess fit with evidence</span>${icon('arrow')}<span>Your review</span></div></section>
+  const cfg = c.config;
+  return `<div class="stack">${sourcePicker(c)}
   <section class="panel"><div class="panel-header"><div><h2>Reach out for a reason</h2><p>Optional: select events to require a recent signal, or leave all unselected to assess audience fit.</p></div></div><div class="signals">${S.session.catalog.signals.map(s => `<button class="${cfg.signals.includes(s) ? 'selected' : ''}" onclick="toggleSignal('${s}')">${cfg.signals.includes(s) ? '✓' : '+'} ${s}</button>`).join('')}</div>
-  <div class="two-col" style="margin-top:24px"><div class="field"><label for="freshness">Signal recency</label><select id="freshness" onchange="saveCampaign({config:{freshness:+this.value}})">${[7, 30, 90].map(n => `<option value="${n}" ${cfg.freshness === n ? 'selected' : ''}>Last ${n} days</option>`).join('')}</select></div><div class="field"><label for="target">Daily lead target</label><input id="target" type="number" min="25" max="30" value="${cfg.target}" onchange="this.value=Math.min(30,Math.max(25,+this.value||25));saveCampaign({config:{target:+this.value}})"><p class="helper">Minimum goal 25 · maximum 30 per day.</p></div></div>
+  <div class="two-col" style="margin-top:24px"><div class="field"><label for="freshness">Signal recency</label><select id="freshness" onchange="saveCampaign({config:{freshness:+this.value}})">${[7, 30, 90].map(n => `<option value="${n}" ${cfg.freshness === n ? 'selected' : ''}>Last ${n} days</option>`).join('')}</select></div><div class="field"><label for="target">Daily lead target</label><input id="target" type="number" min="1" max="30" value="${cfg.target}" onchange="this.value=Math.min(30,Math.max(1,+this.value||1));saveCampaign({config:{target:+this.value}})"><p class="helper">Choose 1–30 leads. Research is available for one campaign per day (UTC).</p></div></div>
   <label for="quality">Minimum fit score <strong id="quality-value">${cfg.quality}/100</strong></label><input id="quality" type="range" min="70" max="95" step="5" value="${cfg.quality}" oninput="$('quality-value').textContent=this.value+'/100';saveCampaign({config:{quality:+this.value}})">
   <label class="inline" style="margin-top:16px"><input type="checkbox" ${cfg.requireVerifiedEmail ? 'checked' : ''} onchange="saveCampaign({config:{requireVerifiedEmail:this.checked}})"> Require a verified email (unverified addresses go to review)</label>
   <div class="rule-row">${icon('check')}<div><strong>Company and role match</strong><p>Missing role, industry, size, or location data sends a prospect to review instead of counting as a match.</p></div></div><div class="rule-row">${icon('check')}<div><strong>Usable, verified email</strong><p>Invalid, bounced, or suppressed addresses are excluded; unknown or catch-all ones need your review.</p></div></div><div class="rule-row">${icon('check')}<div><strong>Deduplicated and relevant</strong><p>Exclude customers, competitors, opt-outs, and people already contacted.</p></div></div></section></div>`;
+}
+async function loadSourceStatus(){if(S.cid)S.sources=await Api.get(`/api/campaigns/${S.cid}/sources`);}
+async function chooseLeadSource(source){
+ if(S.busy||S.uploadBusy)return;
+ saveCampaign({config:{source}});render();
+ try{await flushSave();await loadSourceStatus();render();}catch(e){fail(e);}
+}
+function sourcePicker(c){
+ const source=c.config.source, st=S.sources;
+ const running=S.runs.some(r=>['queued','running'].includes(r.status));
+ const unavailable=source==='research'?(!st?.research_ready||st.other_campaign_today||!st.daily_remaining):(source==='upload'&&!st?.uploaded_ready);
+ return `<section class="panel"><div class="panel-header"><div><h2>Find your next customers</h2><p>Choose how you want to build this campaign’s lead list.</p></div></div>
+ <div class="choice-grid"><button class="choice ${source==='research'?'active':''}" aria-pressed="${source==='research'}" onclick="chooseLeadSource('research')"><span class="title">${icon('spark')} Research Leads</span><p>Get researched contacts matched to this campaign’s audience. Review each lead before writing your emails.</p>${badge(st?`${st.research_ready} matches available`:'Checking availability')}</button>
+ <button class="choice ${source!=='research'?'active':''}" aria-pressed="${source!=='research'}" onclick="chooseLeadSource('upload')"><span class="title">${icon('download')} Import your own contacts</span><p>Upload a CSV, check the preview and add your contacts to this campaign.</p>${badge(st?`${st.uploaded_ready} new contacts`:'CSV upload')}</button></div>
+ ${source==='research'?`<div class="notice" style="margin-top:16px">${icon('shield')}<span>${st?.other_campaign_today?'Research is already in use by another campaign today. Continue there or return tomorrow (UTC).':`Up to ${c.config.target} leads for this campaign today. ${st?`${st.daily_remaining} remaining.`:''} One research campaign per day (UTC).`}</span></div>${st&&st.research_ready===0?'<p class="helper">No new matches are ready yet. Check back later or import your own contacts. We will show fewer leads when fewer meet your criteria.</p>':''}`:campaignUploadView()}
+ <div class="toolbar" style="margin-top:16px"><button class="primary" onclick="requestSourceLeads()" ${S.busy||S.uploadBusy||running||unavailable?'disabled':''}>${running?'Checking contacts…':source==='research'?`Get up to ${c.config.target} leads`:'Review my contacts'}</button></div></section>`;
+}
+async function requestSourceLeads(){try{await flushSave();await goStep(2);await discoverBatch();}catch(e){fail(e);}}
+function campaignUploadView(){
+ const p=S.uploadPreview,r=S.importResult;
+ return `<div style="margin-top:20px"><div class="toolbar"><strong>Your contact list</strong><a class="button small" href="/contact-import-template.csv" download>Download CSV template</a></div>
+ <p class="helper">Start with first_name, last_name, email and company. Columns can be in any order. Add role, location and employees so we can check your audience filters. Last-name values may be blank. Up to 5,000 rows / 5 MB.</p>
+ <div class="campaign-upload-box"><div>${icon('download')}<strong>Upload your contacts</strong><p class="helper">Choose a CSV to preview before importing.</p></div><button type="button" onclick="$('campaign-csv').click()" ${S.uploadBusy?'disabled':''}>${S.uploadFile?'Choose a different file':'Choose CSV file'}</button><input id="campaign-csv" type="file" hidden accept=".csv,text/csv" aria-label="Upload campaign contacts" onchange="previewCampaignFile(this)" ${S.uploadBusy?'disabled':''}><span class="helper campaign-upload-filename" role="status">${S.uploadFile?esc(S.uploadFile.filename):'CSV files · up to 5 MB'}</span></div>
+ ${S.uploadBusy?'<p role="status">Checking your file…</p>':''}
+ ${p?`<div class="notice" style="margin-top:16px"><span>${p.valid} contacts ready · ${p.duplicates} duplicate rows skipped · ${p.errors.length} invalid rows</span></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Company</th></tr></thead><tbody>${p.preview.map(x=>`<tr><td>${esc(x.first_name+' '+x.last_name)}</td><td>${esc(x.email)}</td><td>${esc(x.company)}</td></tr>`).join('')}</tbody></table></div>${p.errors.slice(0,8).map(e=>`<p class="helper">Row ${e.line}: ${esc(e.reason)}</p>`).join('')}<p class="helper">Uploaded email addresses need verification or manual review. Importing does not send emails.</p><button class="primary" onclick="confirmCampaignImport()" ${S.uploadBusy||p.errors.length||!p.valid?'disabled':''}>Import ${p.valid} contacts</button>`:''}
+ ${r?`<div class="notice" role="status">${r.linked} contacts added to this campaign. ${r.created_count} new · ${r.updated_count} updated · ${r.duplicates} duplicate rows skipped.</div>`:''}</div>`;
+}
+async function previewCampaignFile(input){
+ const file=input.files?.[0];if(!file)return;
+ if(file.size>5_000_000){toast('Choose a CSV up to 5 MB.');return;}
+ const cid=S.cid;S.uploadBusy=true;S.uploadPreview=null;S.uploadFile=null;S.importResult=null;render();
+ try{const csv=await file.text();const preview=await Api.post(`/api/campaigns/${cid}/import-preview`,{csv});if(cid===S.cid){S.uploadPreview=preview;S.uploadFile={filename:file.name,csv};}}catch(e){fail(e);}finally{if(cid===S.cid){S.uploadBusy=false;render();}}
+}
+async function confirmCampaignImport(){
+ if(!S.uploadFile||S.uploadBusy)return;const cid=S.cid;S.uploadBusy=true;render();
+ try{await flushSave();const result=await Api.post(`/api/campaigns/${cid}/imports`,S.uploadFile,{idem:Api.key()});if(cid===S.cid){S.importResult=result;S.uploadFile=null;S.uploadPreview=null;await Promise.all([loadSourceStatus(),refreshSummary()]);toast('Contacts imported. Continue to check their campaign fit.');}}catch(e){fail(e);}finally{if(cid===S.cid){S.uploadBusy=false;render();}}
 }
 function toggleSignal(s) { const c = current(); const list = c.config.signals.includes(s) ? c.config.signals.filter(x => x !== s) : [...c.config.signals, s]; saveCampaign({ config: { signals: list } }); render(); }
 
@@ -297,7 +328,7 @@ function watchRun() {
     const run = await Api.get(`/api/runs/${r.id}`);
     S.runs[0] = run;
     if (['queued', 'running'].includes(run.status)) { const el = $('run-progress'); if (el) el.textContent = run.progress?.total ? `${run.progress.checked} of ${run.progress.total} candidates checked` : 'Queued…'; return true; }
-    await Promise.all([loadLeads(), refreshCampaign(), refreshSummary()]);
+    await Promise.all([loadLeads(), refreshCampaign(), refreshSummary(), loadSourceStatus()]);
     if (run.status === 'failed') toast(run.error || 'Discovery failed.');
     render(); return false;
   });
@@ -305,23 +336,24 @@ function watchRun() {
 async function discoverBatch() {
   if (S.busy) return;
   S.busy = true; render();
-  try { await flushSave(); const run = await Api.post(`/api/campaigns/${S.cid}/discovery-runs`, {}, { idem: Api.key() }); S.runs = [run, ...S.runs.filter(r => r.id !== run.id)]; S.runId = 'all'; S.lq = { decision: 'qualified', q: '', page: 0 }; watchRun(); }
+  try { await flushSave(); const run = await Api.post(`/api/campaigns/${S.cid}/discovery-runs`, {}, { idem: Api.key() }); S.runs = [run, ...S.runs.filter(r => r.id !== run.id)]; S.runId = 'all'; S.lq = { decision: 'all', q: '', page: 0 }; await loadSourceStatus(); watchRun(); }
   catch (e) { fail(e); }
   S.busy = false; render();
 }
 function reviewView(c) {
   const run = S.runs[0], running = run && ['queued', 'running'].includes(run.status);
-  if (running || !S.runs.length) return `<div class="panel empty"><div class="ai-mark">${icon('spark')}</div><h3>${running ? 'Checking fit, context, and contact details…' : 'Let’s find your first daily batch'}</h3><p>${running ? '' : 'Discovery checks your imported contacts against this campaign’s filters, signals, and exclusions, then assesses fit with the evidence on file.'}</p>${running ? `<div class="progress-track"></div><p class="helper" id="run-progress">${run.progress?.total ? `${run.progress.checked} of ${run.progress.total} candidates checked` : 'Queued…'}</p>` : (S.summary?.contacts ? `<button class="primary" onclick="discoverBatch()" ${S.busy ? 'disabled' : ''}>${icon('spark')} Run discovery</button>` : `<button class="primary" onclick="navigate('contacts')">${icon('download')} Import contacts first</button>`)}</div>`;
+  if (running || !S.runs.length) return `<div class="stack">${sourcePicker(c)}${running?`<div class="notice" role="status">${icon('spark')}<div><strong>Checking your campaign matches…</strong><p id="run-progress" class="helper">Checking contact details, fit and exclusions.</p></div></div>`:''}</div>`;
+
   const L = S.leads;
   if (!L) return loadingPanel('Loading leads…');
   const viewRun = S.runId === 'all' ? null : S.runs.find(r => r.id === S.runId);
   const qualified = viewRun ? viewRun.qualified : (L.counts.qualified || 0), target = c.config.target;
   const stale = c.latest_run && c.latest_run.config_version < c.config_version;
-  return `<div class="discovery-hero"><div class="discovery-count">${qualified}<small> / ${target}</small></div><div class="grow"><h3>${qualified >= 25 ? 'Quality-checked prospects, ready for you.' : 'Quality first. This batch is below target.'}</h3><p>${S.runs.length > 1 ? `${S.runs.length} batches · ` : ''}latest batch ${run.batch}: ${run.candidates} candidates checked, ${run.status}${run.finished_at ? ' ' + fmtDate(run.finished_at) : ''}</p></div><select aria-label="Batch" style="max-width:190px" onchange="S.runId=this.value;S.lq.page=0;reloadLeads()"><option value="all">All batches</option>${S.runs.map(r => `<option value="${esc(r.id)}" ${S.runId === r.id ? 'selected' : ''}>Batch ${r.batch} · ${fmtDay(r.created_at)} · ${r.qualified} qualified</option>`).join('')}</select>${c.status !== 'stopped' ? `<button class="small ghost" onclick="discoverBatch()" ${S.busy ? 'disabled' : ''}>Run discovery again</button>` : ''}</div>
+  return `${sourcePicker(c)}<div class="discovery-hero" style="margin-top:20px"><div class="discovery-count">${qualified}<small> / ${target}</small></div><div class="grow"><h3>${qualified >= target ? 'Quality-checked prospects, ready for you.' : 'Quality first. This batch is below target.'}</h3><p>${S.runs.length > 1 ? `${S.runs.length} batches · ` : ''}latest batch ${run.batch}: ${run.candidates} candidates checked, ${run.status}${run.finished_at ? ' ' + fmtDate(run.finished_at) : ''}</p></div><select aria-label="Batch" style="max-width:190px" onchange="S.runId=this.value;S.lq.page=0;reloadLeads()"><option value="all">All batches</option>${S.runs.map(r => `<option value="${esc(r.id)}" ${S.runId === r.id ? 'selected' : ''}>Batch ${r.batch} · ${fmtDay(r.created_at)} · ${r.qualified} qualified</option>`).join('')}</select>${c.status !== 'stopped' ? `<button class="small ghost" onclick="discoverBatch()" ${S.busy ? 'disabled' : ''}>Run discovery again</button>` : ''}</div>
   ${run.status === 'failed' ? `<div class="notice amber" style="margin-bottom:20px">${icon('shield')}Batch ${run.batch} failed: ${esc(run.error)}. Run discovery again to retry.</div>` : ''}
-  ${run.shortfall_reason ? `<div class="notice ${qualified < 25 ? 'amber' : ''}" style="margin-bottom:20px">${icon('shield')}${esc(run.shortfall_reason)}</div>` : ''}
+  ${run.shortfall_reason ? `<div class="notice ${qualified < target ? 'amber' : ''}" style="margin-bottom:20px">${icon('shield')}${esc(run.shortfall_reason)}</div>` : ''}
   ${stale ? `<div class="notice" style="margin-bottom:20px">${icon('spark')}Campaign settings changed after the latest batch. Existing leads keep their original assessment; run discovery again to apply the new settings to new contacts.</div>` : ''}
-  <div class="panel"><div class="tabs">${[['qualified', 'Qualified'], ['review', 'Needs review'], ['excluded', 'Excluded']].map(([k, n]) => `<button class="${S.lq.decision === k ? 'active' : ''}" onclick="S.lq.decision='${k}';S.lq.page=0;reloadLeads()">${n} ${badge(L.counts[k] || 0)}</button>`).join('')}</div>
+  <div class="panel"><div class="tabs">${[['all', 'All leads'], ['qualified', 'Qualified'], ['review', 'Needs review'], ['excluded', 'Excluded']].map(([k, n]) => `<button class="${S.lq.decision === k ? 'active' : ''}" onclick="S.lq.decision='${k}';S.lq.page=0;reloadLeads()">${n} ${badge(k==='all'?Object.values(L.counts).reduce((a,b)=>a+Number(b),0):(L.counts[k] || 0))}</button>`).join('')}</div>
   <div class="toolbar"><div class="search">${icon('search')}<input id="lead-search" aria-label="Search prospects" placeholder="Search people or companies" value="${esc(S.lq.q)}" oninput="S.lq.q=this.value;S.lq.page=0;clearTimeout(window._st);window._st=setTimeout(reloadLeads,300)"></div><span class="subtle">${L.selected} selected for email drafts</span><button class="small" onclick="selectTopLeads()">Select top ${target} qualified</button><button class="small ghost" onclick="clearSelection()">Clear selection</button></div>
   <div id="lead-results">${leadTable(c)}</div><p class="helper">Click a prospect to see the checks and evidence behind their fit.</p></div>`;
 }
@@ -476,7 +508,7 @@ function scheduleView(c) {
 function toggleDay(d) { const s = current().config.schedule; saveCampaign({ config: { schedule: { ...s, days: s.days.includes(d) ? s.days.filter(x => x !== d) : [...s.days, d] } } }); render(); }
 function launchView(c) {
   const cfg = c.config, b = c.blockers || [];
-  return `<div class="launch-hero"><span class="ai-mark">${icon('campaign')}</span><div><h2>Ready for your first conversation.</h2><p>Here’s exactly what you’re launching.</p></div></div><section class="panel"><div class="review-grid">${[['Audience', filterSummary(c)], ['Source', cfg.source === 'salesnav' ? 'Sales Navigator export (CSV import)' : 'Imported contacts'], ['First batch', `${S.drafts?.total ?? '—'} selected prospects`], ['Approved drafts', `${S.drafts?.approved ?? '—'} emails`], ['Daily goal', cfg.target + ' prospects · quality first'], ['Schedule', cfg.schedule.days.join(', ') + ' · ' + cfg.schedule.time + ' ' + cfg.schedule.timezone], ['Approval', 'Review every day'], ['Delivery', `Manual — you send from ${c.context.data.email}`]].map(([k, v]) => `<div class="review-item"><small>${k}</small><strong>${esc(v)}</strong></div>`).join('')}</div>
+  return `<div class="launch-hero"><span class="ai-mark">${icon('campaign')}</span><div><h2>Ready for your first conversation.</h2><p>Here’s exactly what you’re launching.</p></div></div><section class="panel"><div class="review-grid">${[['Audience', filterSummary(c)], ['Source', cfg.source === 'research' ? 'Research Leads' : 'Your contacts'], ['First batch', `${S.drafts?.total ?? '—'} selected prospects`], ['Approved drafts', `${S.drafts?.approved ?? '—'} emails`], ['Daily goal', cfg.target + ' prospects · quality first'], ['Schedule', cfg.schedule.days.join(', ') + ' · ' + cfg.schedule.time + ' ' + cfg.schedule.timezone], ['Approval', 'Review every day'], ['Delivery', `Manual — you send from ${c.context.data.email}`]].map(([k, v]) => `<div class="review-item"><small>${k}</small><strong>${esc(v)}</strong></div>`).join('')}</div>
   ${b.length ? `<div class="notice amber">${icon('shield')}<span><strong>Before you launch</strong><br>${b.map(x => esc(x.message)).join('<br>')}</span></div>` : `<div class="checklist"><div>${icon('check')} Every email approved at its exact wording</div><div>${icon('check')} Poor-fit, excluded, and suppressed prospects held back</div><div>${icon('check')} Follow-ups stop on replies, bounces, and opt-outs you record</div></div>`}
   <label class="context-banner"><input id="launch-check" type="checkbox"><span>I understand that launching adds approved emails to my send queue. I send each one from my own mailbox; nothing is sent automatically.</span></label></section>`;
 }
@@ -651,10 +683,10 @@ async function loadContacts() {
 function contactsView() {
   const C = S.contacts, last = S.lastImport;
   return `<div class="heading"><div><div class="eyebrow">CONTACTS</div><h1>Your people, in one place.</h1><p>Import prospects, see where they’re used, and manage who must never be contacted.</p></div></div>
-  <div class="wizard-grid"><div class="stack"><section class="panel"><div class="panel-header"><div><h2>Import contacts</h2><p>CSV with a header row. Required: first name (or name), company, and an email or LinkedIn URL.</p></div>${icon('download')}</div>
+  <div class="wizard-grid"><div class="stack">${S.session.user.operator?`<section class="panel"><div class="panel-header"><div><h2>Import contacts</h2><p>CSV with a header row. Required: first name (or name), company, and an email or LinkedIn URL.</p></div>${icon('download')}</div>
     <div class="inline"><label class="button primary small" for="csv-file" style="margin:0">${icon('download')} Choose CSV file</label><input id="csv-file" type="file" accept=".csv,text/csv" style="display:none" onchange="importFile(this)"><select id="csv-source" aria-label="Import source" style="max-width:240px"><option value="csv">CRM or provider export</option><option value="salesnav_export">Sales Navigator export</option></select><button class="small ghost" onclick="importSample()">Load fictional sample contacts</button></div>
     <p class="helper">Optional columns: last_name, title, email_status (valid, invalid, catch-all, unknown — from your verification provider), domain, industry, employees, location, linkedin_url, relationship (customer, competitor, agency, opportunity), signal (Hiring, Funding, New leadership, Expansion), signal_fact, signal_date (YYYY-MM-DD), signal_url. Re-importing updates existing people instead of duplicating them.</p>
-    ${last ? `<div class="notice ${last.rejected.some(r => !r.partial) ? 'amber' : ''}">${icon('check')}<span><strong>${esc(last.filename)}</strong>: ${last.created_count} new, ${last.updated_count} updated, ${last.rejected.filter(r => !r.partial).length} rejected.${last.rejected.length ? '<br>' + last.rejected.slice(0, 8).map(r => `Line ${r.line}: ${esc(r.reason)}`).join('<br>') + (last.rejected.length > 8 ? `<br>…and ${last.rejected.length - 8} more` : '') : ''}</span></div>` : ''}</section>
+    ${last ? `<div class="notice ${last.rejected.some(r => !r.partial) ? 'amber' : ''}">${icon('check')}<span><strong>${esc(last.filename)}</strong>: ${last.created_count} new, ${last.updated_count} updated, ${last.rejected.filter(r => !r.partial).length} rejected.${last.rejected.length ? '<br>' + last.rejected.slice(0, 8).map(r => `Line ${r.line}: ${esc(r.reason)}`).join('<br>') + (last.rejected.length > 8 ? `<br>…and ${last.rejected.length - 8} more` : '') : ''}</span></div>` : ''}</section>`:`<section class="panel"><h2>Import your own contacts</h2><p>Choose a campaign to upload and review its contact list.</p><button onclick="navigate('campaigns')">Choose campaign</button></section>`}
   <section class="panel"><div class="panel-header"><div><h2>All contacts</h2><p>${C ? plural(C.total, 'contact') : ''}</p></div></div><div class="toolbar"><div class="search">${icon('search')}<input id="contact-search" aria-label="Search contacts" placeholder="Search people, companies, or emails" value="${esc(S.cq)}" oninput="S.cq=this.value;S.cpage=0;clearTimeout(window._cs);window._cs=setTimeout(()=>loadContacts().then(()=>{render();const i=$('contact-search');i.focus();i.setSelectionRange(i.value.length,i.value.length)}),300)"></div></div>
   ${!C ? loadingPanel() : `<div class="table-wrap"><table><thead><tr><th>Person</th><th>Company</th><th>Email</th><th>Campaigns</th><th></th></tr></thead><tbody>${C.items.map(x => `<tr><td><div class="person"><span class="avatar">${initials(x.first_name + ' ' + x.last_name)}</span><div><strong>${esc(x.first_name)} ${esc(x.last_name)}</strong><small>${esc(x.role)}</small></div></div></td><td>${esc(x.company)}<small>${esc([x.industry, x.location].filter(Boolean).join(' · '))}</small></td><td>${esc(x.email || '—')}<small>${x.suppressed ? badge('Suppressed: ' + x.suppressed, 'red') : emailBadge(x.email_status)}</small></td><td><small>${esc(x.campaigns || '—')}${x.last_outcome ? ' · last: ' + esc(x.last_outcome) : ''}</small></td><td><button class="small ghost" onclick="S.modal='outcome';S.modalData={contact:'${esc(x.id)}',name:'${esc(x.first_name)} ${esc(x.last_name)}'};render()">Record outcome</button></td></tr>`).join('') || '<tr><td colspan="5">No contacts yet. Import a CSV to get started.</td></tr>'}</tbody></table></div>
   <div class="table-bottom"><span>${C.total ? `${S.cpage * 15 + 1}–${Math.min(S.cpage * 15 + 15, C.total)} of ${C.total}` : ''}</span><div class="inline"><button class="small ghost" ${S.cpage === 0 ? 'disabled' : ''} onclick="S.cpage--;loadContacts().then(render)">← Previous</button><button class="small ghost" ${(S.cpage + 1) * 15 >= C.total ? 'disabled' : ''} onclick="S.cpage++;loadContacts().then(render)">Next →</button></div></div>`}</section></div>
@@ -662,6 +694,7 @@ function contactsView() {
   <section class="panel"><h2 style="font-size:14px">Recent imports</h2>${S.imports.map(i => `<div class="summary-row"><small>${fmtDate(i.created_at)} · ${i.source === 'salesnav_export' ? 'Sales Navigator export' : 'CSV'}</small><p>${esc(i.filename)}: ${i.created_count} new, ${i.updated_count} updated, ${i.rejected.filter(r => !r.partial).length} rejected</p></div>`).join('') || '<p class="helper">No imports yet.</p>'}</section></aside></div>`;
 }
 async function importCsvText(filename, csv, source) {
+  if(!S.session.user.operator){toast('Choose a campaign, then select Import your own contacts.');return;}
   try { S.lastImport = await Api.post('/api/imports', { filename, csv, source }, { idem: Api.key() }); S.cpage = 0; await loadContacts(); render(); toast(`Imported ${filename}.`); } catch (e) { fail(e); }
 }
 function importFile(input) {
@@ -867,7 +900,36 @@ async function changePassword() {
 }
 // ---------- Super admin: pilot access ----------
 function toggleAdmin() { navigate(S.view === 'admin' ? 'home' : 'admin'); }
-async function loadAdmin() { const [p, l] = await Promise.all([Api.get('/api/admin/people'), Api.get('/api/admin/log')]); S.admin = p; S.adminLog = l.items; }
+function researchSelection(field,value){S[field]=value;if(field==='researchWorkspace')S.researchCampaign='';S.researchPreview=null;S.researchFile=null;S.researchResult=null;render();}
+async function previewResearchFile(input){
+ const file=input.files?.[0];if(!file)return;
+ if(!S.researchCampaign){toast('Choose the customer and campaign first.');return;}
+ if(file.size>5_000_000){toast('CSV files are limited to 5 MB.');return;}
+ const campaign=S.researchCampaign;S.researchBusy=true;S.researchResult=null;S.researchPreview=null;S.researchFile=null;render();
+ try{const csv=await file.text();const p=await Api.post(`/api/admin/campaigns/${campaign}/research-preview`,{csv});if(campaign===S.researchCampaign){S.researchPreview=p;S.researchFile={csv,filename:file.name};}}catch(e){fail(e);}finally{S.researchBusy=false;render();}
+}
+async function prepareResearchFile(){
+ if(S.researchBusy||!S.researchFile||!S.researchPreview?.valid||S.researchPreview.errors.length)return;
+ const campaign=S.researchCampaign,date=S.researchDate;if(!campaign||!date){toast('Choose a campaign and availability date.');return;}
+ S.researchBusy=true;S.researchResult=null;render();
+ try{S.researchResult=await Api.post(`/api/admin/campaigns/${campaign}/research`,{...S.researchFile,available_on:date},{idem:Api.key()});S.researchPreview=null;S.researchFile=null;}catch(e){fail(e);}finally{S.researchBusy=false;render();}
+}
+function adminResearchView(){
+ const all=S.researchCampaigns||[],workspaces=[...new Map(all.map(c=>[c.workspace_id,c])).values()];
+ const campaigns=all.filter(c=>c.workspace_id===S.researchWorkspace),selected=campaigns.find(c=>c.id===S.researchCampaign),p=S.researchPreview,r=S.researchResult;
+ S.researchDate ||= new Date().toISOString().slice(0,10);
+ return `<section class="panel" style="margin-bottom:24px"><div class="panel-header"><div><h2>Weekly research leads</h2><p>Prepare leads for a customer’s campaign. Customers receive them through Research Leads.</p></div><a class="button small" href="/research-import-template.csv" download>Download research template</a></div>
+ <div class="three-col"><div class="field"><label>Customer workspace</label><select aria-label="Customer workspace" onchange="researchSelection('researchWorkspace',this.value)" ${S.researchBusy?'disabled':''}><option value="">Choose a customer</option>${workspaces.map(c=>`<option value="${esc(c.workspace_id)}" ${S.researchWorkspace===c.workspace_id?'selected':''}>${esc(c.workspace)} · ${esc(c.owner_email||c.workspace_id)}</option>`).join('')}</select></div>
+ <div class="field"><label>Target campaign</label><select aria-label="Target campaign" onchange="researchSelection('researchCampaign',this.value)" ${!S.researchWorkspace||S.researchBusy?'disabled':''}><option value="">Choose a campaign</option>${campaigns.map(c=>`<option value="${esc(c.id)}" ${S.researchCampaign===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+ <div class="field"><label for="research-date">Available from (UTC)</label><input id="research-date" type="date" value="${esc(S.researchDate)}" onchange="researchSelection('researchDate',this.value)" ${S.researchBusy?'disabled':''}></div></div>
+ <p class="helper">Up to 150 contacts per weekly file. Customers can receive up to 30 per day, on five days per UTC week, with one research campaign per day. Only matching, verified contacts become available. Use email_status=valid only after actual verification.</p>
+ <p class="helper">Required columns: first_name, last_name, email, company. Add targeting fields and research_fact / research_url for personalised emails. The template row is an example; replace it with real research.</p>
+ ${!all.length?'<p class="notice">No customer campaigns yet. A customer must create a campaign before you can prepare its leads.</p>':''}
+ <button onclick="$('research-file').click()" ${!selected||S.researchBusy?'disabled':''}>${S.researchBusy?'Checking…':'Choose research CSV'}</button><input id="research-file" type="file" hidden accept=".csv,text/csv" onchange="previewResearchFile(this)">
+ ${p?`<div style="margin-top:16px"><strong>${esc(S.researchFile.filename)}</strong><p>${p.valid} valid contacts · ${p.duplicates} duplicate rows · ${p.errors.length} invalid rows</p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Company</th></tr></thead><tbody>${p.preview.map(x=>`<tr><td>${esc(x.first_name+' '+x.last_name)}</td><td>${esc(x.email)}</td><td>${esc(x.company)}</td></tr>`).join('')}</tbody></table></div>${p.errors.slice(0,10).map(e=>`<p class="helper">Row ${e.line}: ${esc(e.reason)}</p>`).join('')}<p>Upload to <strong>${esc(selected?.workspace)} — ${esc(selected?.name)}</strong>, available ${esc(S.researchDate)} (UTC). Campaign qualification runs on upload; this preview checks the file format.</p><button class="primary" onclick="prepareResearchFile()" ${S.researchBusy||p.errors.length||!p.valid?'disabled':''}>Confirm research upload</button></div>`:''}
+ ${r?`<div class="notice" style="margin-top:16px" role="status"><div><strong>Research list processed</strong><p>${r.ready} matched contacts · ${r.rejected.length} did not qualify · ${r.import.rejected.length} import issues. No emails were sent.</p>${r.rejected.slice(0,10).map(x=>`<p class="helper">${esc(x.reason)}</p>`).join('')}${r.import.rejected.slice(0,10).map(x=>`<p class="helper">Row ${x.line}: ${esc(x.reason)}</p>`).join('')}</div></div>`:''}</section>`;
+}
+async function loadAdmin() { const [p, l, c] = await Promise.all([Api.get('/api/admin/people'), Api.get('/api/admin/log'),Api.get('/api/admin/research-campaigns')]); S.admin = p; S.adminLog = l.items; S.researchCampaigns=c.items; }
 function adminView() {
   if (!S.session?.user.super_admin) return `<div class="panel empty"><h3>Super admins only</h3></div>`;
   const A = S.admin;
@@ -877,7 +939,8 @@ function adminView() {
     : p.editable ? `<label class="inline" style="margin:0"><input type="checkbox" ${p.operator ? 'checked' : ''} onchange="adminOperator('${esc(p.email)}',this.checked)"> Operator</label><button class="small ghost" onclick="adminRemove('${esc(p.email)}')">Remove access</button>`
     : p.approved ? '<small class="subtle">Managed in deployment settings</small>'
     : `<button class="small" onclick="adminAdd(['${esc(p.email)}'],false,false)">Restore access</button>`;
-  return `<div class="heading"><div><div class="eyebrow">SUPER ADMIN</div><h1>Pilot access</h1><p>Approve who can use Outbound and who can import leads. Changes apply immediately.</p></div>${badge('Super admin', 'green')}</div>
+  return `<div class="heading"><div><div class="eyebrow">SUPER ADMIN</div><h1>Customer management</h1><p>Manage customer access and prepare campaign research.</p></div>${badge('Super admin', 'green')}</div>
+  ${adminResearchView()}
   <div class="wizard-grid"><div class="stack">
   <section class="panel"><div class="panel-header"><div><h2>Add people</h2><p>One or many emails, separated by commas, spaces, or new lines.</p></div>${icon('people')}</div>
     <div class="field"><label for="admin-emails">Email addresses</label><textarea id="admin-emails" placeholder="name@company.com, other@company.com"></textarea></div>
@@ -888,6 +951,7 @@ function adminView() {
   <section class="panel"><div class="panel-header"><div><h2>People</h2><p>${A ? (n => `${n} approved ${n === 1 ? 'person' : 'people'}`)(A.people.filter(p => p.approved).length) : ''}</p></div></div>
   ${!A ? loadingPanel() : `<div class="table-wrap"><table class="admin-table"><thead><tr><th>Email</th><th>Account</th><th>Access</th><th></th></tr></thead><tbody>${A.people.map(p => `<tr><td>${esc(p.email)}${p.added?.note ? `<small>${esc(p.added.note)}</small>` : ''}</td><td>${acct(p)}</td><td>${tag(p)}</td><td><div class="inline">${actions(p)}</div></td></tr>`).join('')}</tbody></table></div>`}</section></div>
   <aside class="wizard-aside stack"><section class="panel"><h2 style="font-size:14px">How access works</h2><p class="subtle">Approved people can create an account with that exact email and get their own workspace. Removing access signs them out everywhere; their workspace data is kept.</p><p class="subtle">Super admins are set in the deployment configuration and can't be changed here.</p></section>
+
   <section class="panel"><h2 style="font-size:14px">Recent admin activity</h2>${(S.adminLog || []).map(e => `<div class="summary-row"><small>${fmtDate(e.created_at)} · ${esc(e.actor || '')}</small><p>${esc(e.summary)}</p></div>`).join('') || '<p class="helper">No admin activity yet.</p>'}</section></aside></div>`;
 }
 async function adminAdd(emails, operator, notify, note = '') {

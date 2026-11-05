@@ -52,7 +52,7 @@ const nextPilotDay = async () => {
 };
 
 async function readyCampaign(name = 'Founders in India') {
-  const c = await ok('POST', '/api/campaigns', { name, prompt: 'Find founders of funded SaaS companies in India' });
+  const c = await ok('POST', '/api/campaigns', { source:'import', name, prompt: 'Find founders of funded SaaS companies in India' });
   return ok('PATCH', `/api/campaigns/${c.id}`, { revision: c.revision, config: { filters: { roles: ['Founder', 'Head of Growth'], industries: ['B2B SaaS'], locations: ['India'], sizes: ['11–50', '51–200'] }, signals: ['Hiring', 'Funding', 'New leadership', 'Expansion'] } });
 }
 async function discover(c) {
@@ -291,4 +291,35 @@ test('brief interpretation keeps the prompt and only proposes detected filters',
   const c = await ok('POST', '/api/campaigns', { prompt: b.prompt, brief: b });
   assert.equal(c.prompt, b.prompt);
   assert.deepEqual(c.config.filters.roles, ['Head of Growth']);
+});
+
+test('ordinary customers can import campaign contacts but cannot prepare research',async()=>{
+ const s=await seedWorkspace(app.db,{name:'Customer',userName:'Customer',email:'customer@upload.test'});
+ const auth={auth:s.token};
+ const c=await ok('POST','/api/campaigns',{name:'My contacts',source:'upload'},auth);
+ const csv='first_name,last_name,email,company\nA,Example,a@upload.test,Example';
+ const preview=await ok('POST',`/api/campaigns/${c.id}/import-preview`,{csv},auth);
+ assert.equal(preview.valid,1);assert.equal(preview.accepted,undefined);
+ const imported=await ok('POST',`/api/campaigns/${c.id}/imports`,{csv},auth);assert.equal(imported.linked,1);
+ assert.equal((await ok('GET',`/api/campaigns/${c.id}/sources`,null,auth)).uploaded_ready,1);
+ assert.equal((await api('POST',`/api/admin/campaigns/${c.id}/research`,{csv},auth)).status,403);
+ assert.equal((await api('GET',`/api/campaigns/${c.id}/sources`,null,{auth:other.token})).status,404);
+});
+
+test('super admin previews and seeds research into the selected customer campaign only',async()=>{
+ const boss=await seedWorkspace(app.db,{name:'Admin',userName:'Admin',email:'khushi.sharma.2201@gmail.com'});
+ const customer=await seedWorkspace(app.db,{name:'Research customer',userName:'Customer',email:'research@customer.test'});
+ const auth={auth:boss.token},cust={auth:customer.token};
+ const c=await ok('POST','/api/campaigns',{name:'Founders',source:'research',brief:{filters:{roles:['Founder'],locations:['India']},signals:[]}},cust);
+ const csv='first_name,last_name,email,company,role,location,email_status,research_fact,research_url\nA,Example,a@research.test,Research Co,Founder,India,valid,Sells refillable packaging,https://example.com/products';
+ const list=await ok('GET','/api/admin/research-campaigns',null,auth);
+ assert.ok(list.items.some(x=>x.id===c.id&&x.owner_email==='research@customer.test'));
+ assert.equal((await api('POST',`/api/admin/campaigns/${c.id}/research-preview`,{csv},cust)).status,403);
+ const preview=await ok('POST',`/api/admin/campaigns/${c.id}/research-preview`,{csv},auth);assert.equal(preview.valid,1);
+ assert.equal((await ok('GET',`/api/campaigns/${c.id}/sources`,null,cust)).research_ready,0);
+ const result=await ok('POST',`/api/admin/campaigns/${c.id}/research`,{csv,available_on:new Date().toISOString().slice(0,10)},auth);assert.equal(result.ready,1);
+ assert.equal((await ok('GET',`/api/campaigns/${c.id}/sources`,null,cust)).research_ready,1);
+ assert.equal((await app.db.get('SELECT count(*) n FROM contacts WHERE workspace_id=?',[boss.workspace.id])).n,0);
+ const tooMany=csv.split('\n')[0]+'\n'+Array.from({length:151},(_,i)=>`A,Example,a${i}@research.test,Co,Founder,India,valid,Research,https://example.com`).join('\n');
+ assert.equal((await api('POST',`/api/admin/campaigns/${c.id}/research`,{csv:tooMany},auth)).status,422);
 });
