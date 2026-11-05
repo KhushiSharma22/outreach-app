@@ -1,7 +1,7 @@
-// Sign-in: email + password with verification, reset, sessions, invites, and Google (mocked token endpoint).
+// Sign-in for the private pilot: approved emails only, email + password with verification, reset,
+// sessions, and invites. Google sign-in is disabled in the pilot.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { createApp } from '../server/app.mjs';
 import { sentMail } from '../server/mailer.mjs';
 import { resetRateLimits } from '../server/auth.mjs';
@@ -9,27 +9,19 @@ import { testDatabase } from './helpers.mjs';
 
 process.env.NODE_ENV = 'test';
 process.env.AI_PROVIDER = 'offline';
-let app, base, google, googleClaims = {}, tdb;
+let app, base, tdb;
+// The pilot only admits approved addresses; these are the accounts the tests use.
+process.env.ALLOWED_EMAILS = ['asha@acme.test', 'dup@acme.test', 'reset@acme.test', 'owner@team.test', 'stranger@else.test', 'new@team.test', 'x@team.test', 'pat@corp.test'].join(',');
 
 before(async () => {
-  // Mock of Google's token endpoint: returns an unsigned ID token with the claims under test.
-  google = createServer((req, res) => {
-    let body = ''; req.on('data', c => body += c); req.on('end', () => {
-      const p = new URLSearchParams(body);
-      if (p.get('code') !== 'good-code' || !p.get('code_verifier')) { res.writeHead(400); return res.end('{}'); }
-      const seg = o => Buffer.from(JSON.stringify(o)).toString('base64url');
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ id_token: `${seg({ alg: 'RS256' })}.${seg(googleClaims)}.sig` }));
-    });
-  });
-  await new Promise(r => google.listen(0, '127.0.0.1', r));
-  Object.assign(process.env, { GOOGLE_CLIENT_ID: 'client-123', GOOGLE_CLIENT_SECRET: 'secret', GOOGLE_TOKEN_URL: `http://127.0.0.1:${google.address().port}/token` });
+  // Google settings present on purpose: the pilot must keep Google sign-in off regardless.
+  Object.assign(process.env, { GOOGLE_CLIENT_ID: 'client-123', GOOGLE_CLIENT_SECRET: 'secret' });
   tdb = await testDatabase();
   app = await createApp({ ...tdb, workers: false, publicUrl: 'http://app.test' });
   await new Promise(r => app.server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${app.server.address().port}`;
 });
-after(async () => { await app.close(); google.close(); await tdb.drop(); });
+after(async () => { await app.close(); await tdb.drop(); });
 beforeEach(() => resetRateLimits(app.db));
 
 // Minimal browser: keeps cookies, sends the CSRF header.
@@ -148,34 +140,22 @@ test('accounts are isolated; invites add teammates to the same workspace with me
   assert.equal((await owner.del(`/api/team/members/${self.id}`)).status, 409);
 });
 
-test('Google sign-in creates verified accounts, links by verified email, and rejects bad state or claims', async () => {
-  const flow = async (claims, { tamperState = false, invite } = {}) => {
-    const b = browser();
-    const start = await b.call('GET', `/auth/google/start${invite ? `?invite=${invite}` : ''}`, null, { redirect: 'manual' });
-    assert.equal(start.status, 302);
-    const loc = new URL(start.headers.get('location'));
-    assert.equal(loc.searchParams.get('code_challenge_method'), 'S256');
-    assert.equal(loc.searchParams.get('redirect_uri'), 'http://app.test/auth/google/callback');
-    googleClaims = { iss: 'https://accounts.google.com', aud: 'client-123', exp: Math.floor(Date.now() / 1000) + 300, nonce: loc.searchParams.get('nonce'), email_verified: true, ...claims };
-    const state = tamperState ? 'forged' : loc.searchParams.get('state');
-    const cb = await b.call('GET', `/auth/google/callback?code=good-code&state=${state}`, null, { redirect: 'manual' });
-    return { b, location: cb.headers.get('location') };
-  };
-  const fresh = await flow({ sub: 'g-1', email: 'gina@gmail.test', name: 'Gina G' });
-  assert.equal(fresh.location, 'http://app.test/#/');
-  const s = (await fresh.b.get('/api/session')).data;
-  assert.equal(s.user.google_linked, true);
-  assert.equal(s.user.has_password, false);
-  assert.equal(s.workspace.name, 'Gina’s workspace');
-
-  // An unverified password account with the same email is linked and confirmed by Google.
-  await browser().post('/api/auth/signup', { name: 'Pat', email: 'pat@corp.test', password: 'pat password long' });
-  const linked = await flow({ sub: 'g-2', email: 'pat@corp.test', name: 'Pat' });
-  assert.equal((await linked.b.get('/api/session')).data.user.email_verified, true);
-  assert.equal((await app.db.get("SELECT count(*) n FROM users WHERE lower(email)='pat@corp.test'")).n, 1);
-
-  assert.match((await flow({ sub: 'g-3', email: 'x@gmail.test' }, { tamperState: true })).location, /error=google_state/);
-  assert.match((await flow({ sub: 'g-4', email: 'y@gmail.test', aud: 'someone-else' })).location, /error=google_token/);
-  assert.match((await flow({ sub: 'g-5', email: 'z@gmail.test', email_verified: false })).location, /error=google_unverified/);
-  assert.match((await flow({ sub: 'g-6', email: 'z@gmail.test', nonce: 'replayed' })).location, /error=google_token/);
+test('the pilot rejects unapproved addresses and keeps Google sign-in off', async () => {
+  const b = browser();
+  const r = await b.post('/api/auth/signup', { name: 'Outsider', email: 'outsider@else.test', password: 'a long enough password' });
+  assert.equal(r.status, 403);
+  assert.equal(r.data.error.code, 'access_restricted');
+  assert.equal(sentMail().filter(m => m.to === 'outsider@else.test').length, 0);
+  assert.equal((await app.db.get("SELECT count(*) n FROM users WHERE lower(email)='outsider@else.test'")).n, 0);
+  const cfg = (await b.get('/api/auth/config')).data;
+  assert.equal(cfg.google, false);
+  assert.equal(cfg.restricted, true);
+  const start = await b.call('GET', '/auth/google/start', null, { redirect: 'manual' });
+  assert.equal(start.status, 404);
+  // Removing an address from the approved list ends that person's existing sessions.
+  const asha = await signUpVerified('pat@corp.test', 'Pat', 'Corp');
+  assert.equal((await asha.get('/api/session')).status, 200);
+  const before = process.env.ALLOWED_EMAILS;
+  process.env.ALLOWED_EMAILS = before.split(',').filter(e => e !== 'pat@corp.test').join(',');
+  try { assert.equal((await asha.get('/api/session')).status, 401); } finally { process.env.ALLOWED_EMAILS = before; }
 });

@@ -14,6 +14,7 @@ import { testDatabase } from './helpers.mjs';
 
 process.env.NODE_ENV = 'test';
 process.env.AI_PROVIDER = 'offline';
+process.env.ALLOWED_EMAILS = 'test@testco.test'; // the pilot admits approved addresses only
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 // Runs whenever Chrome is installed; set BROWSER_TESTS=0 to skip it.
 const ENABLED = process.env.BROWSER_TESTS !== '0' && existsSync(CHROME);
@@ -54,6 +55,7 @@ async function open(path) { await send('Page.navigate', { url: 'about:blank' });
 const submit = fields => js(`(()=>{${Object.entries(fields).map(([k, v]) => `document.getElementById('auth-${k}').value=${JSON.stringify(v)};`).join('')}document.querySelector('.auth-card form').requestSubmit();return true})()`);
 const heading = () => js("document.querySelector('.auth-card h2, h1')?.textContent || ''");
 const errorText = () => js("document.querySelector('.auth-card .error')?.textContent || ''");
+// Signed in = the workspace shell is showing. New pilot users land on onboarding (company context) first.
 const link = kind => sentMail().filter(m => m.url?.includes(`/#/${kind}/`)).at(-1).url.replace(/^https?:\/\/[^/]+/, '');
 
 test('sign-up, email confirmation, password reset, and sign-in work through the real forms', { skip: !ENABLED && 'needs Chrome (or BROWSER_TESTS=0 was set)' }, async () => {
@@ -62,7 +64,8 @@ test('sign-up, email confirmation, password reset, and sign-in work through the 
   assert.ok(await until("document.querySelector('.auth-card h2')?.textContent==='Check your email'"), await errorText());
 
   await open(link('verify'));
-  assert.ok(await until("document.querySelector('h1')?.textContent.startsWith('Hello, Test')"), 'confirm link signs in');
+  assert.ok(await until("document.querySelector('.sidebar') && !document.querySelector('.auth-card')"), 'confirm link signs in');
+  assert.equal(await js("document.querySelector('h1')?.textContent"), '1. Company context'); // pilot onboarding step 1
 
   await js('signOut()');
   assert.ok(await until("document.querySelector('.auth-card h2')?.textContent==='Welcome back'"));
@@ -73,12 +76,12 @@ test('sign-up, email confirmation, password reset, and sign-in work through the 
 
   await open(link('reset'));
   await submit({ password: 'a different passphrase', confirm: 'a different passphrase' });
-  assert.ok(await until("document.querySelector('h1')?.textContent.startsWith('Hello, Test')"), `reset failed: ${await errorText()}`);
+  assert.ok(await until("document.querySelector('.sidebar') && !document.querySelector('.auth-card')"), `reset failed: ${await errorText()}`);
 
   await js('signOut()');
   await until("document.getElementById('auth-password')");
   await submit({ email: 'test@testco.test', password: 'my long new password' });
   assert.ok(await until("(document.querySelector('.auth-card .error')?.textContent||'').includes('incorrect')"), 'old password rejected');
   await submit({ email: 'test@testco.test', password: 'a different passphrase' });
-  assert.ok(await until("document.querySelector('h1')?.textContent.startsWith('Hello, Test')"), `sign-in failed: ${await errorText()} / ${await heading()}`);
+  assert.ok(await until("document.querySelector('.sidebar') && !document.querySelector('.auth-card')"), `sign-in failed: ${await errorText()} / ${await heading()}`);
 });

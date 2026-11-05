@@ -1,4 +1,4 @@
-// Backend acceptance tests (handoff §14). Run: node --test tests/
+// Backend acceptance tests (handoff §14) under the private-pilot rules. Run: node --test tests/
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp, seedWorkspace } from '../server/app.mjs';
@@ -10,7 +10,7 @@ import { testDatabase } from './helpers.mjs';
 
 process.env.AI_PROVIDER = 'offline';
 process.env.NODE_ENV = 'test';
-let app, base, token, other, tdb;
+let app, base, token, other, tdb, wsId, wsN = 0;
 
 before(async () => {
   tdb = await testDatabase();
@@ -30,6 +30,23 @@ async function api(method, path, body, { auth = token, headers = {} } = {}) {
 const ok = async (...a) => { const r = await api(...a); assert.ok(r.status < 300, `${a[0]} ${a[1]} → ${r.status} ${JSON.stringify(r.data)}`); return r.data; };
 const drain = () => app.jobs.drain();
 
+// Pilot rules: one discovery allocation (at most 30 candidates) per workspace per UTC day, and only
+// operators may import leads. Each test therefore gets its own workspace whose user is an operator,
+// and imports exactly 30 people so the candidate set is deterministic.
+const sampleRows = () => sampleCsv().trimEnd().split('\n');
+const goodCsv = () => sampleRows().slice(0, 31).join('\n') + '\n';  // header + 30 qualifying people
+const edgeCsv = () => [sampleRows()[0], ...sampleRows().slice(31), ...sampleRows().slice(1, 23)].join('\n') + '\n'; // 8 edge cases + 22 qualifying
+async function freshWorkspace({ csv = goodCsv() } = {}) {
+  const email = `op${++wsN}@pilot.test`;
+  const s = await seedWorkspace(app.db, { name: `Pilot ${wsN}`, userName: 'Op', email });
+  process.env.OPERATOR_EMAILS = [process.env.OPERATOR_EMAILS, email].filter(Boolean).join(',');
+  token = s.token; wsId = s.workspace.id;
+  if (csv) await ok('POST', '/api/imports', { filename: 'pilot.csv', csv });
+  return s;
+}
+// Moves this workspace's allocation to yesterday, as if a new pilot day had started.
+const nextPilotDay = () => app.db.run('UPDATE pilot_allocations SET day=? WHERE workspace_id=?', [new Date(Date.now() - 864e5).toISOString().slice(0, 10), wsId]);
+
 async function readyCampaign(name = 'Founders in India') {
   const c = await ok('POST', '/api/campaigns', { name, prompt: 'Find founders of funded SaaS companies in India' });
   return ok('PATCH', `/api/campaigns/${c.id}`, { revision: c.revision, config: { filters: { roles: ['Founder', 'Head of Growth'], industries: ['B2B SaaS'], locations: ['India'], sizes: ['11–50', '51–200'] }, signals: ['Hiring', 'Funding', 'New leadership', 'Expansion'] } });
@@ -46,6 +63,7 @@ async function approveAll(c) {
   return ok('POST', '/api/approvals', { confirm: true, items: d.items.map(x => ({ draft_id: x.draft.id, revision_id: x.draft.revision_id })) });
 }
 async function launched() {
+  await freshWorkspace();
   let c = await readyCampaign('Launch ' + Math.random());
   await discover(c);
   await approveAll(c);
@@ -53,8 +71,12 @@ async function launched() {
   return ok('POST', `/api/campaigns/${c.id}/launch`, { revision: c.revision });
 }
 
-test('import resolves identities, rejects bad rows, and dedupes repeat imports', async () => {
+test('import resolves identities, rejects bad rows, and dedupes repeat imports; only operators may import', async () => {
+  await freshWorkspace({ csv: null });
   const csv = sampleCsv();
+  const denied = await api('POST', '/api/imports', { filename: 'sample.csv', csv }, { auth: other.token });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.data.error.code, 'operator_only');
   const first = await ok('POST', '/api/imports', { filename: 'sample.csv', csv });
   assert.equal(first.created_count, 38);
   const again = await ok('POST', '/api/imports', { filename: 'sample.csv', csv });
@@ -69,12 +91,19 @@ test('import resolves identities, rejects bad rows, and dedupes repeat imports',
 });
 
 test('discovery qualifies with evidence, keeps batches, never re-adds the same prospect, and reports shortfall', async () => {
+  await freshWorkspace({ csv: edgeCsv() });
   const c = await readyCampaign();
   const run1 = await discover(c);
   assert.equal(run1.status, 'completed');
-  assert.equal(run1.candidates, 38);
-  assert.equal(run1.qualified, 30);
-  assert.equal(run1.selected, 28);
+  assert.equal(run1.candidates, 30);
+  assert.equal(run1.qualified, 22);
+  assert.equal(run1.selected, 22);
+  assert.match(run1.shortfall_reason, /below the minimum/);
+  // The pilot allows one batch per workspace per day, across all campaigns.
+  const other1 = await readyCampaign('Second campaign');
+  const blocked = await api('POST', `/api/campaigns/${other1.id}/discovery-runs`);
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.data.error.code, 'daily_limit');
   const leads = await ok('GET', `/api/campaigns/${c.id}/leads?decision=all&page_size=100`);
   const by = n => leads.items.find(l => l.name === n);
   assert.equal(by('Ira Banerjee').decision, 'review');          // no email
@@ -84,6 +113,7 @@ test('discovery qualifies with evidence, keeps batches, never re-adds the same p
   assert.equal(by('Nisha Pillai').decision, 'review');          // unknown event date
   assert.equal(by('Farhan Qureshi').decision, 'review');        // unverified email
   assert.ok(by('Aarav Mehta').evidence.length);
+  await nextPilotDay();
   const run2 = await discover(c);
   assert.equal(run2.candidates, 0);
   assert.equal(run2.qualified, 0);
@@ -93,6 +123,7 @@ test('discovery qualifies with evidence, keeps batches, never re-adds the same p
 });
 
 test('hard exclusions cannot be overridden; review leads need a reason', async () => {
+  await freshWorkspace({ csv: edgeCsv() });
   const c = await readyCampaign();
   await discover(c);
   const all = (await ok('GET', `/api/campaigns/${c.id}/leads?decision=all&page_size=100`)).items;
@@ -105,6 +136,7 @@ test('hard exclusions cannot be overridden; review leads need a reason', async (
 });
 
 test('editing after approval blocks launch until the new revision is approved; stale approvals conflict', async () => {
+  await freshWorkspace();
   let c = await readyCampaign();
   await discover(c);
   await approveAll(c);
@@ -123,6 +155,7 @@ test('editing after approval blocks launch until the new revision is approved; s
 });
 
 test('repeated launch requests create work once; manual sends are labeled as user-confirmed', async () => {
+  await freshWorkspace();
   let c = await readyCampaign();
   await discover(c);
   await approveAll(c);
@@ -213,6 +246,7 @@ test('scheduler creates one batch per local day and no backlog', async () => {
   await runScheduler(app.db, ctxFor, Date.now());
   assert.equal((await ok('GET', `/api/campaigns/${c.id}/batches`)).items.length, before);
   // Next scheduled weekday at 10:00 local: exactly one new batch even with repeated ticks.
+  await nextPilotDay();
   let t = Date.now() + 864e5;
   while (!['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' }).format(t))) t += 864e5;
   const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(t);
@@ -231,6 +265,7 @@ test('follow-up due dates respect timezone, DST, and sending days', () => {
 });
 
 test('workspace isolation and request protections', async () => {
+  await freshWorkspace();
   const c = await readyCampaign();
   assert.equal((await api('GET', `/api/campaigns/${c.id}`, null, { auth: other.token })).status, 404);
   assert.equal((await api('PATCH', `/api/campaigns/${c.id}`, { revision: c.revision, name: 'x' }, { auth: other.token })).status, 404);

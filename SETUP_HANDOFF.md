@@ -80,7 +80,10 @@ Brevo works the same way: host `smtp-relay.brevo.com`, port 587, and the login a
 
 `npm test` includes a test that delivers through a fake local SMTP server, so the code path is covered. What hasn't been tried yet is a real provider.
 
-## 3. Google sign-in: left to do
+## 3. Google sign-in: disabled for the private pilot
+
+Skip this section for now. During the pilot, Google sign-in is turned off in the code (`googleEnabled()` returns false), whatever the settings. The steps below apply when it's re-enabled after the pilot.
+
 
 1. Go to https://console.cloud.google.com and create a project (or select one).
 2. Go to **APIs & Services** → **OAuth consent screen** (shown as "Google Auth Platform" in newer consoles).
@@ -126,7 +129,9 @@ The code for Vercel is in place. On Vercel the app runs like this:
    | `DATABASE_URL` | the port-6543 URL from step 1 |
    | `DATABASE_CA_CERT_PEM` | the full text of the Supabase certificate file, from `-----BEGIN CERTIFICATE-----` to `-----END CERTIFICATE-----` |
    | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | as in section 2 |
-   | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | as in section 3 |
+   | `ALLOWED_EMAILS` | the approved pilot addresses, comma-separated (empty means nobody can sign in) |
+   | `OPERATOR_EMAILS` | the addresses allowed to import leads |
+   | `MAILBOX_KEY` | 32 random bytes, base64 (`openssl rand -base64 32`); keep it stable, or saved mailbox connections stop working |
    | `GEMINI_API_KEY` | your Gemini key (optional; enables AI drafting and qualification) |
    | `CRON_SECRET` | the value from step 2 |
    | `PUBLIC_URL` | optional. If unset, the app uses the project's production domain. Set it if you add a custom domain. |

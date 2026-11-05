@@ -10,6 +10,7 @@ process.env.NODE_ENV = 'test';
 process.env.AI_PROVIDER = 'offline';
 process.env.AUTH_MODE = 'dev';
 process.env.CRON_SECRET = 'test-cron-secret';
+process.env.OPERATOR_EMAILS = 'maya@northstar.example'; // pilot: only operators import leads
 const pending = [];
 // Vercel's request context, as read by waitUntil().
 globalThis[Symbol.for('@vercel/request-context')] = { get: () => ({ waitUntil: p => pending.push(p) }) };
@@ -53,7 +54,7 @@ test('rewritten paths and query strings reach the app', async () => {
 
 test('discovery queued by a request finishes after the response via waitUntil', async () => {
   await settle();
-  assert.equal((await call('POST', '/api/imports', { filename: 's.csv', csv: sampleCsv() })).status, 201);
+  assert.equal((await call('POST', '/api/imports', { filename: 's.csv', csv: sampleCsv().trimEnd().split('\n').slice(0, 31).join('\n') + '\n' })).status, 201); // 30 qualifying people (pilot cap)
   let c = (await call('POST', '/api/campaigns', { name: 'Vercel run' })).data;
   c = (await call('PATCH', `/api/campaigns/${c.id}`, { revision: c.revision, config: { filters: { roles: ['Founder', 'Head of Growth'], industries: ['B2B SaaS'] }, signals: ['Hiring', 'Funding', 'New leadership', 'Expansion'] } })).data;
   const run = await call('POST', `/api/campaigns/${c.id}/discovery-runs`);

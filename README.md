@@ -27,27 +27,27 @@ This builds the backend described in `BACKEND_HANDOFF.md` and connects the exist
 |---|---|
 | Stack | Node.js (≥ 24), no framework. Dependencies: `pg`, `nodemailer`, and the optional Gemini and Anthropic SDKs. |
 | Database | **Supabase (PostgreSQL)** when `DATABASE_URL` is set; otherwise a local SQLite file. The same code and SQL run on both. |
-| Delivery | **Manual send tasks.** The server never sends email. You send from your own mailbox and confirm. |
-| Sourcing | **CSV import** from your CRM or an authorized provider (a Sales Navigator export counts as an import). AI web research is shown as unavailable. |
+| Delivery | **Manual send tasks**, or **Send via SMTP** through the workspace's connected mailbox (credentials encrypted with `MAILBOX_KEY`; every campaign email carries an unsubscribe link). |
+| Sourcing | **Curated lead pool.** Pilot operators (`OPERATOR_EMAILS`) import leads by CSV; each workspace gets one batch of at most 30 leads per UTC day, across all campaigns, for up to five days. |
 | AI | **Gemini** (`GEMINI_API_KEY`, default model `gemini-flash-latest`) or **Claude** (`ANTHROPIC_API_KEY`, `claude-opus-5-5`). Otherwise a deterministic, evidence-only template provider is used. |
 | Approval mode | Daily review only. Pre-approved rules mode is disabled until a policy is agreed. |
-| Sign-in | Email + password (confirmed by email) and Google. Sign-up creates a workspace; owners invite teammates. |
+| Sign-in | **Private pilot.** Only addresses in `ALLOWED_EMAILS` can sign up or sign in, with email + password confirmed by email. Google sign-in is disabled (the code is kept for a later release). Sign-up creates a workspace; owners invite approved teammates. |
 
 ## Run locally
 
 ```sh
 npm install
-cp .env.example .env # optional: fill in Supabase, SMTP, Google, and AI settings
+cp .env.example .env # fill in ALLOWED_EMAILS, and optionally Supabase, SMTP, and AI settings
 npm start            # http://127.0.0.1:4173
 ```
 
 `npm start` loads `.env` automatically. With no `DATABASE_URL`, data is kept in a local SQLite file.
 
-Open the URL and create an account. Without SMTP settings, the confirmation link is printed in the server console; open it to finish signing up. With SQLite, data lives in `data/outreach.db`; delete `data/` to start over.
+Open the URL and create an account with an address listed in `ALLOWED_EMAILS`. Without SMTP settings, the confirmation link is printed in the server console; open it to finish signing up. With SQLite, data lives in `data/outreach.db`; delete `data/` to start over.
 
 If you used an earlier version, your existing Northstar workspace is kept, but its owner (`maya@northstar.example`) has no password. Choose **Forgot password?** on the sign-in screen, enter that address, and open the reset link from the console.
 
-To try the whole flow quickly, go to **Contacts → Load fictional sample contacts**. This adds 38 fictional people with `.example` addresses and recent signal dates. Then create a campaign from Home.
+To try the whole flow quickly, sign in with an address in `OPERATOR_EMAILS` and go to **Contacts → Load fictional sample contacts**. This adds 38 fictional people with `.example` addresses and recent signal dates. Then create a campaign from Home.
 
 ### Configuration
 
@@ -68,19 +68,22 @@ To try the whole flow quickly, go to **Contacts → Load fictional sample contac
 | `PUBLIC_URL` | `http://127.0.0.1:PORT` | Address users reach. Used in email links and the Google redirect; `https://` turns on secure cookies. Required when binding beyond localhost. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SECURE` | — | SMTP server for confirmation, reset, and invite emails (port 465 implies TLS). Required when binding beyond localhost. |
 | `MAIL_FROM` | `Outbound <no-reply@localhost>` | Sender for those emails. |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | Enables “Continue with Google”. |
+| `ALLOWED_EMAILS` | empty (nobody) | Pilot allowlist: exact addresses, comma-separated. Removing an address ends that person's sessions. |
+| `OPERATOR_EMAILS` | empty | Addresses allowed to import leads into the pilot pool. |
+| `MAILBOX_KEY` | — | 32 random bytes (base64) used to encrypt connected-mailbox credentials. Keep it stable and secret. |
+| `SMTP_ALLOWED_HOSTS` | `smtp.gmail.com,smtp.office365.com` | SMTP hosts a workspace may connect for campaign sending. |
+| `LOCAL_SKIP_EMAIL_VERIFICATION` | `false` | Local development only: skip email confirmation. Ignored in production and on Vercel. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | Ignored during the pilot: Google sign-in is disabled. |
 | `AUTH_MODE` | `accounts` | `dev` also seeds a demo workspace and writes an API bearer token to `data/.dev-token` for scripts. |
 
 ### Sign-in
 
-People can sign in with **email and password** or **Google**:
+During the private pilot, only addresses in `ALLOWED_EMAILS` can use the app, with **email and password**:
 
-- **Sign-up** creates a new workspace the person owns. They must confirm their email before the first password sign-in; the link expires in 24 hours.
+- **Sign-up** is refused for any other address. An approved sign-up creates a new workspace the person owns, and new users are taken through onboarding: company context, then email setup. They must confirm their email before the first password sign-in; the link expires in 24 hours.
 - **Teammates** are invited from **Team & account**. The invite email links to a page where they create an account or sign in, and they join the inviting workspace as a member or owner. Signing up through an invite skips email confirmation, because the invite link itself proved the address. People who belong to several workspaces can switch from the sidebar.
-- **Google** accounts are linked to an existing account with the same email, since Google has verified that address.
+- **Google** sign-in is disabled for the pilot. The implementation is kept for a later release.
 - **Forgot password** sends a one-hour, single-use reset link. Completing a reset or changing a password signs out other sessions.
-
-To set up Google, create an OAuth client (type *Web application*) in Google Cloud Console → APIs & Services → Credentials. Add `PUBLIC_URL/auth/google/callback` as an authorized redirect URI, for example `http://127.0.0.1:4173/auth/google/callback`. Then set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 
 For SMTP you can use any provider: Google Workspace with an app password (`smtp.gmail.com`, port 465), Amazon SES, Postmark, SendGrid, or Mailgun. These settings are only for account emails. Outreach is still sent by you from your own mailbox.
 
@@ -91,7 +94,7 @@ How it's protected:
 - Sign-in, sign-up, reset, and invite requests are rate-limited.
 - Sign-up and reset responses don't reveal whether an account exists.
 - Every write, including sign-in forms, requires the app's CSRF header.
-- Google sign-in uses PKCE, state bound to a cookie, and nonce checks, and requires a verified Google email.
+- Sessions of people removed from `ALLOWED_EMAILS` stop working immediately.
 
 ## How it works
 
@@ -162,7 +165,7 @@ All routes are under `/api` and scoped to the signed-in workspace. Operations th
 ## Files
 
 - `server/app.mjs`: HTTP server, routing, idempotency, static files
-- `server/auth.mjs`: accounts, sessions, email verification, password reset, Google sign-in, invites
+- `server/auth.mjs`: accounts, pilot allowlist, sessions, email verification, password reset, invites (Google sign-in disabled for the pilot)
 - `server/mailer.mjs`: SMTP delivery of account emails (console fallback in development)
 - `server/db.mjs`: schema, plus PostgreSQL and SQLite drivers behind one async API (transactions follow the async call chain)
 - `scripts/sqlite-to-postgres.mjs`: one-time copy of local data into Supabase
@@ -176,7 +179,7 @@ All routes are under `/api` and scoped to the signed-in workspace. Operations th
 - `server/ai.mjs`: Gemini, Claude, and offline providers (shared prompts and schemas), draft guard
 - `server/sample.mjs`: fictional sample CSV
 - `dist/`: frontend (`index.html`, `api.js` client, `app.js`, `style.css`)
-- `tests/`: backend acceptance tests, sign-in tests (Google token endpoint mocked), SMTP test against a local fake server, Gemini and Claude adapter tests against local mocks, frontend integration test
+- `tests/`: backend acceptance tests, sign-in tests under the pilot allowlist, pilot allocation and mailbox tests, SMTP test against a local fake server, Gemini and Claude adapter tests against local mocks, frontend integration test
 
 ## Hosting on Vercel
 
