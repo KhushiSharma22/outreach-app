@@ -30,7 +30,7 @@ async function api(method, path, body, { auth = token, headers = {} } = {}) {
 const ok = async (...a) => { const r = await api(...a); assert.ok(r.status < 300, `${a[0]} ${a[1]} → ${r.status} ${JSON.stringify(r.data)}`); return r.data; };
 const drain = () => app.jobs.drain();
 
-// Pilot rules: one discovery allocation (at most 30 candidates) per workspace per UTC day, and only
+// Pilot rules: at most 30 reserved candidates per workspace per UTC day, and only
 // operators may import leads. Each test therefore gets its own workspace whose user is an operator,
 // and imports exactly 30 people so the candidate set is deterministic.
 const sampleRows = () => sampleCsv().trimEnd().split('\n');
@@ -45,7 +45,11 @@ async function freshWorkspace({ csv = goodCsv() } = {}) {
   return s;
 }
 // Moves this workspace's allocation to yesterday, as if a new pilot day had started.
-const nextPilotDay = () => app.db.run('UPDATE pilot_allocations SET day=? WHERE workspace_id=?', [new Date(Date.now() - 864e5).toISOString().slice(0, 10), wsId]);
+const nextPilotDay = async () => {
+  const yesterday=new Date(Date.now()-864e5).toISOString();
+  await app.db.run('UPDATE pilot_allocations SET day=? WHERE workspace_id=?',[yesterday.slice(0,10),wsId]);
+  await app.db.run('UPDATE discovery_runs SET created_at=? WHERE campaign_id IN (SELECT id FROM campaigns WHERE workspace_id=?)',[yesterday,wsId]);
+};
 
 async function readyCampaign(name = 'Founders in India') {
   const c = await ok('POST', '/api/campaigns', { name, prompt: 'Find founders of funded SaaS companies in India' });
@@ -99,7 +103,7 @@ test('discovery qualifies with evidence, keeps batches, never re-adds the same p
   assert.equal(run1.qualified, 22);
   assert.equal(run1.selected, 22);
   assert.match(run1.shortfall_reason, /below the minimum/);
-  // The pilot allows one batch per workspace per day, across all campaigns.
+  // The first batch used all 30 contact checks across campaigns.
   const other1 = await readyCampaign('Second campaign');
   const blocked = await api('POST', `/api/campaigns/${other1.id}/discovery-runs`);
   assert.equal(blocked.status, 409);
@@ -114,12 +118,10 @@ test('discovery qualifies with evidence, keeps batches, never re-adds the same p
   assert.equal(by('Farhan Qureshi').decision, 'review');        // unverified email
   assert.ok(by('Aarav Mehta').evidence.length);
   await nextPilotDay();
-  const run2 = await discover(c);
-  assert.equal(run2.candidates, 0);
-  assert.equal(run2.qualified, 0);
-  assert.match(run2.shortfall_reason, /No new contacts/);
+  const empty = await api('POST', `/api/campaigns/${c.id}/discovery-runs`);
+  assert.equal(empty.data.error.code, 'no_new_contacts');
   const batches = await ok('GET', `/api/campaigns/${c.id}/batches`);
-  assert.equal(batches.items.length, 2);
+  assert.equal(batches.items.length, 1);
 });
 
 test('hard exclusions cannot be overridden; review leads need a reason', async () => {
@@ -245,8 +247,9 @@ test('scheduler creates one batch per local day and no backlog', async () => {
   await runScheduler(app.db, ctxFor, Date.now());
   await runScheduler(app.db, ctxFor, Date.now());
   assert.equal((await ok('GET', `/api/campaigns/${c.id}/batches`)).items.length, before);
-  // Next scheduled weekday at 10:00 local: exactly one new batch even with repeated ticks.
+  // Next scheduled weekday with newly imported contacts: one batch, even with repeated ticks.
   await nextPilotDay();
+  await ok('POST', '/api/imports', { filename: 'next-day.csv', csv: goodCsv().replaceAll('@', '+next@').replaceAll('linkedin.com/in/', 'linkedin.com/in/next-') });
   let t = Date.now() + 864e5;
   while (!['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' }).format(t))) t += 864e5;
   const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(t);

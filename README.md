@@ -28,7 +28,7 @@ This builds the backend described in `BACKEND_HANDOFF.md` and connects the exist
 | Stack | Node.js (≥ 24), no framework. Dependencies: `pg`, `nodemailer`, and the optional Gemini and Anthropic SDKs. |
 | Database | **Supabase (PostgreSQL)** when `DATABASE_URL` is set; otherwise a local SQLite file. The same code and SQL run on both. |
 | Delivery | **Manual send tasks**, or **Send via SMTP** through the workspace's connected mailbox (credentials encrypted with `MAILBOX_KEY`; every campaign email carries an unsubscribe link). |
-| Sourcing | **Curated lead pool.** Pilot operators (`OPERATOR_EMAILS`) import leads by CSV; each workspace gets one batch of at most 30 leads per UTC day, across all campaigns, for up to five days. |
+| Sourcing | **Curated lead pool.** Pilot operators (`OPERATOR_EMAILS`) import leads by CSV; each workspace can check at most 30 distinct contacts per UTC day across all campaigns, for up to five days within seven days. Small batches leave capacity for later imports on the same day; excluded contacts count toward the allowance. |
 | AI | **Gemini** (`GEMINI_API_KEY`, default model `gemini-flash-latest`) or **Claude** (`ANTHROPIC_API_KEY`, `claude-opus-5-5`). Otherwise a deterministic, evidence-only template provider is used. |
 | Approval mode | Daily review only. Pre-approved rules mode is disabled until a policy is agreed. |
 | Sign-in | **Private pilot.** Only addresses in `ALLOWED_EMAILS` can sign up or sign in, with email + password confirmed by email. Google sign-in is disabled (the code is kept for a later release). Sign-up creates a workspace; owners invite approved teammates. |

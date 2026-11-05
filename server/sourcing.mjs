@@ -177,27 +177,45 @@ export async function startDiscovery(ctx, campaignId, { trigger = 'manual', occu
   const c = await loadCampaign(ctx, campaignId);
   if (c.status === 'stopped') throw conflict('campaign_stopped', 'This campaign is stopped.');
   if (!c.config.filters.roles.length && !c.config.filters.industries.length) throw invalid('Choose at least one job role or industry so discovery has an audience.', { filters: 'Required.' });
-  const running = await ctx.db.get("SELECT id FROM discovery_runs WHERE campaign_id=? AND status IN ('queued','running')", [c.id]);
-  if (running) {
-    if (occurrenceDate) await ctx.db.run('UPDATE discovery_runs SET occurrence_date=coalesce(occurrence_date,?) WHERE id=?', [occurrenceDate, running.id]);
-    return await getRun(ctx, running.id);
-  }
-  const batch = ((await ctx.db.get('SELECT max(batch) b FROM discovery_runs WHERE campaign_id=?', [c.id])).b || 0) + 1;
-  const run = { id: id(), campaign_id: c.id, batch, config_version: c.config_version, trigger, occurrence_date: occurrenceDate, status: 'queued', progress: '{}', created_at: now() };
+  let runId;
   await ctx.db.tx(async () => {
-    // Serialize allocation across campaigns and instances (also works on SQLite).
+    // Lock before counting or reserving: all campaigns share one daily allowance.
     await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?', [ctx.ws]);
+    const running = await ctx.db.get("SELECT id FROM discovery_runs WHERE campaign_id=? AND status IN ('queued','running')", [c.id]);
+    if (running) {
+      if (occurrenceDate) await ctx.db.run('UPDATE discovery_runs SET occurrence_date=coalesce(occurrence_date,?) WHERE id=?',[occurrenceDate,running.id]);
+      runId=running.id; return;
+    }
     const allocations = await ctx.db.all('SELECT * FROM pilot_allocations WHERE workspace_id=? ORDER BY day', [ctx.ws]);
-    const day = now().slice(0, 10); // A fixed UTC boundary cannot be bypassed by editing campaign timezone.
-    if (allocations.some(a => a.day === day)) throw conflict('daily_limit', 'Today’s pilot batch has already been allocated. Maximum 30 leads per day across all campaigns (UTC).');
-    if (allocations.length >= 5 || (allocations.length && Date.parse(day) - Date.parse(allocations[0].day) >= 7 * 864e5)) throw conflict('pilot_complete', 'Your five-day pilot allocation has ended. Contact the team to extend your pilot.');
-    await ctx.db.insert('pilot_allocations', {workspace_id:ctx.ws, day, run_id:run.id, created_at:now()});
-    await ctx.db.insert('discovery_runs', run);
-    await ctx.jobs.enqueue(ctx.ws, 'discovery', { run_id: run.id }, { dedupe: 'discovery:' + run.id });
-    await ctx.db.audit(ctx.ws, c.id, 'discovery.queued', `Discovery batch ${batch} queued`, { run_id: run.id, trigger }, ctx.user?.id);
+    const createdAt=now(), day=createdAt.slice(0,10);
+    const existingDay=allocations.some(a=>a.day===day);
+    if ((!existingDay && allocations.length>=5) || (allocations.length && Date.parse(day)-Date.parse(allocations[0].day)>=7*864e5)) throw conflict('pilot_complete', 'Your five-day pilot allocation has ended. Contact the team to extend your pilot.');
+    const remaining=await remainingPilotContacts(ctx,day);
+    if (!remaining) throw conflict('daily_limit', 'All 30 contact checks for today have been allocated across your campaigns (UTC). Excluded contacts also count as checked.');
+    const batch=((await ctx.db.get('SELECT max(batch) b FROM discovery_runs WHERE campaign_id=?',[c.id])).b||0)+1;
+    const run={id:id(),campaign_id:c.id,batch,config_version:c.config_version,trigger,occurrence_date:occurrenceDate,status:'queued',progress:'{}',created_at:createdAt};
+    const contacts=await unallocatedContacts(ctx,c.id,remaining);
+    if (!contacts.length) throw conflict('no_new_contacts','No new contacts are available to check. Import more prospects; previous contacts will not be counted again.');
+    await ctx.db.insert('discovery_runs',run);
+    if (!existingDay) await ctx.db.insert('pilot_allocations',{workspace_id:ctx.ws,day,run_id:run.id,created_at:createdAt});
+    for (const contact of contacts) await ctx.db.insert('pilot_contacts',{workspace_id:ctx.ws,contact_id:contact.id,run_id:run.id});
+    await ctx.jobs.enqueue(ctx.ws,'discovery',{run_id:run.id},{dedupe:'discovery:'+run.id});
+    await ctx.db.audit(ctx.ws,c.id,'discovery.queued',`Discovery batch ${batch} queued: ${contacts.length} contacts reserved`,{run_id:run.id,trigger},ctx.user?.id);
+    runId=run.id;
   });
-  return await getRun(ctx, run.id);
+  return await getRun(ctx,runId);
 }
+async function remainingPilotContacts(ctx,day) {
+ const row=await ctx.db.get(`SELECT count(*) n FROM pilot_contacts pc JOIN discovery_runs r ON r.id=pc.run_id WHERE pc.workspace_id=? AND substr(r.created_at,1,10)=?`,[ctx.ws,day]);
+ return Math.max(0,30-Number(row.n));
+}
+async function unallocatedContacts(ctx,campaignId,limit) {
+ return await ctx.db.all(`SELECT ct.id FROM contacts ct WHERE ct.workspace_id=?
+ AND NOT EXISTS (SELECT 1 FROM pilot_contacts pc WHERE pc.workspace_id=ct.workspace_id AND pc.contact_id=ct.id)
+ AND NOT EXISTS (SELECT 1 FROM campaign_leads l WHERE l.campaign_id=? AND l.contact_id=ct.id)
+ ORDER BY ct.created_at,ct.id LIMIT ?`,[ctx.ws,campaignId,limit]);
+}
+
 export async function getRun(ctx, runId) {
   const r = await ctx.db.get('SELECT r.* FROM discovery_runs r JOIN campaigns c ON c.id=r.campaign_id WHERE r.id=? AND c.workspace_id=?', [runId, ctx.ws]);
   if (!r) throw notFound('Discovery run');
@@ -216,16 +234,22 @@ export async function executeDiscovery(ctx, runId) {
   // A retried run restarts cleanly: drop leads it created that have no downstream work.
   await ctx.db.run('DELETE FROM campaign_leads WHERE run_id=? AND id NOT IN (SELECT lead_id FROM drafts)', [run.id]);
   const today = localView(Date.now(), config.schedule.timezone || 'UTC').date;
-  let candidates = await ctx.db.all(`SELECT ct.*, co.name company, co.domain, co.industry, co.employees, co.location company_location, co.relationship,
+  // Compatibility for a run queued by an older deployment before contacts were reserved.
+  await ctx.db.tx(async()=>{
+    await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
+    const reserved=await ctx.db.get('SELECT count(*) n FROM pilot_contacts WHERE workspace_id=? AND run_id=?',[ctx.ws,run.id]);
+    if (!Number(reserved.n)) {
+      const remaining=await remainingPilotContacts(ctx,run.created_at.slice(0,10));
+      for (const contact of await unallocatedContacts(ctx,c.id,remaining)) await ctx.db.insert('pilot_contacts',{workspace_id:ctx.ws,contact_id:contact.id,run_id:run.id});
+    }
+  });
+  const candidates = await ctx.db.all(`SELECT ct.*, co.name company, co.domain, co.industry, co.employees, co.location company_location, co.relationship,
       s.reason suppressed,
       (SELECT c2.name FROM messages m JOIN campaigns c2 ON c2.id=m.campaign_id WHERE m.contact_id=ct.id AND m.campaign_id<>:cid LIMIT 1) other_campaign
-    FROM contacts ct JOIN companies co ON co.id=ct.company_id
+    FROM pilot_contacts pc JOIN contacts ct ON ct.id=pc.contact_id AND ct.workspace_id=pc.workspace_id
+    JOIN companies co ON co.id=ct.company_id
     LEFT JOIN suppressions s ON s.workspace_id=ct.workspace_id AND s.email=ct.email
-    WHERE ct.workspace_id=:ws AND NOT EXISTS (SELECT 1 FROM pilot_contacts pc WHERE pc.workspace_id=:ws AND pc.contact_id=ct.id AND pc.run_id<>:rid) AND NOT EXISTS (SELECT 1 FROM campaign_leads l WHERE l.campaign_id=:cid AND l.contact_id=ct.id)
-    ORDER BY ct.created_at, ct.id LIMIT :lim`, { ws: ctx.ws, cid: c.id, rid:run.id, lim:30 });
-  await ctx.db.tx(async () => {
-    for (const candidate of candidates) await ctx.db.run('INSERT INTO pilot_contacts(workspace_id, contact_id, run_id) VALUES(?,?,?) ON CONFLICT(workspace_id, contact_id) DO NOTHING', [ctx.ws, candidate.id, run.id]);
-  });
+    WHERE pc.workspace_id=:ws AND pc.run_id=:rid ORDER BY ct.created_at,ct.id`,{ws:ctx.ws,cid:c.id,rid:run.id});
   const progress = async p => await ctx.db.run('UPDATE discovery_runs SET progress=? WHERE id=?', [JSON.stringify(p), run.id]);
   await progress({ stage: 'checking', checked: 0, total: candidates.length });
   const assessed = [];
