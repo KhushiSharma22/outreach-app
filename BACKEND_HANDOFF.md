@@ -1,3 +1,33 @@
+## SMTP onboarding update
+
+Company context now saves into a separate Email setup screen. New empty workspaces enter Company context first. Email setup supports owner-only connect/reconnect/disconnect, encrypted persistence, safe status responses, and one test email to the configured sender before saving. Provider acceptance still does not establish inbox delivery; users should confirm receipt.
+
+Credential ciphertext uses AES-256-GCM with random nonces and workspace ID as authenticated associated data (v2 format). Legacy credentials require reconnection. Keys belong in a deployment secret manager, never Git or the database; retain a secured recovery copy and restrict operational access. Replacing the key without re-encryption makes existing credentials unusable. Database backups may retain old ciphertext after disconnect; use a documented backup-retention policy and revoke provider credentials when needed.
+
+Passwords are never returned in status responses, browser storage, audit events or AI inputs. Setup clears its password field and uses sanitized provider errors. Maximum five setup attempts per workspace per hour. Allowed hosts are operator-controlled; only ports 465/587 and certificate-validated TLS are supported. Production setup requires an HTTPS public origin. Company sender must match SMTP setup; provider permission to send as that address is exercised by the test message.
+
+Tests use a fake transport; no real customer SMTP credential or live delivery was tested. Automated scheduled sending and inbound reply/bounce synchronization remain separate work. These safeguards are not a guarantee of regulatory compliance or immunity from leaks; deployment, backups, secret management and incident response also require operational controls.
+
+# Private pilot implementation update
+
+The changes below supersede the historical handoff where they conflict. These are local changes, not a deployed or live-mail-validated release.
+
+- Exact email allowlist via ALLOWED_EMAILS; empty denies access. Removing an address rejects existing sessions on their next request. Google start and callback disabled. Development authentication forbidden in production/Vercel.
+- Operator-only CSV import endpoint using OPERATOR_EMAILS, plus trusted CLI: node --env-file-if-exists=.env scripts/import-pilot.mjs WORKSPACE_ID leads.csv. Customer can request AI Research over the curated pool; no live discovery claim.
+- Workspace-wide pilot allocation: one batch per UTC day, at most 30 candidate records per batch, five batches within seven calendar days of first allocation. This is a cap, not a promise of 30 qualified matches. Allocation is persisted and serialized across campaigns. Failed work retries the same job; no automatic allowance reset.
+- Separate encrypted customer SMTP settings (AES-256-GCM), operator-approved hosts, TLS, verify/save and disconnect. MAILBOX_KEY must be 32 random bytes encoded in base64 and retained securely. SMTP_ALLOWED_HOSTS must list exact provider hosts. Authentication SMTP environment variables remain separate.
+- Explicit per-task SMTP sends; no automatic SMTP scheduler. Includes postal address, commercial identification, and tokenized public unsubscribe URL. PUBLIC_URL must be a reachable HTTPS origin; Vercel unsubscribe rewrite included. SMTP accepted is not delivered. Unknown outcomes are held, not automatically retried. Follow-ups require inbox-check confirmation because SMTP does not receive replies/bounces.
+- Unsubscribe GET displays a form; POST permanently suppresses within the sender workspace and cancels pending follow-ups. No login required. Repeated requests are idempotent. Suppression survives re-import. Existing manual suppression upgrades to permanent opt-out.
+- Additional conservative delivery ceiling: 30 SMTP messages per UTC day across all campaigns, including follow-ups. Manual sending outside the app cannot be technically constrained by this limit.
+
+## Validation and launch work remaining
+
+Focused allowlist, suppression, pilot quota and public unsubscribe tests pass, as does the updated frontend/API manual-send journey. Live SMTP acceptance/delivery, PostgreSQL concurrency, and a full updated regression suite still require validation. Existing open-signup/Google tests describe superseded behavior and need migration. No compliance certification is implied.
+
+Before customer activation: supply the real curated CSV (not supplied yet), configure deployed allowlist, transactional verification mail, approved SMTP hosts, encryption key and HTTPS origin; have the customer connect their mailbox; confirm sender/domain authorization and SPF/DKIM/DMARC; validate opt-out and actual mailbox delivery using internal test recipients. Public visitors may load the app entry point, but customer data requires authentication.
+
+---
+
 # Outreach app — frontend summary and backend handoff
 
 Prepared 21 October 2026 from the current implementation. This document describes existing code separately from proposed backend work. `PRD.md` is an earlier product plan and predates several frontend changes; use this handoff and the current UI when reconciling scope.

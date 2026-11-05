@@ -46,11 +46,12 @@ async function boot() {
     if (e.status === 401) return showAuth(/^#\/signup/.test(String(location.hash || '')) ? 'signup' : 'signin', { error: googleError(String(location.hash || '')) });
     S.fatal = e.message;
   }
+  if (!S.fatal && !S.context?.data?.offering) return navigate('account');
   render();
   // Restore the screen from the URL so a refresh keeps your place.
   const h = String(location.hash || ''), m = h.match(/^#\/campaign\/([\w-]+)(?:\/(builder|tracking|emails))?/);
   if (!S.fatal && m) openCampaign(m[1], m[2]);
-  else if (!S.fatal && /^#\/(campaigns|outbox|sequences|contacts|account|team)$/.test(h)) navigate(h.slice(2));
+  else if (!S.fatal && /^#\/(campaigns|outbox|sequences|contacts|account|email|team)$/.test(h)) navigate(h.slice(2));
   else if (!S.fatal && /^#\/(signin|signup)/.test(h)) setHash('#/');
 }
 function setHash(h) { try { if (location.hash !== h) history.replaceState(null, '', h); } catch { /* no history API (tests) */ } }
@@ -63,6 +64,7 @@ async function navigate(next) {
     if (next === 'outbox') { S.taskCampaign = null; await loadTasks(); }
     if (next === 'contacts') await loadContacts();
     if (next === 'sequences') await loadSequenceView();
+    if (next === 'email') S.mailbox = await Api.get('/api/mailbox');
     if (next === 'account') S.context = await Api.get('/api/account-context');
     if (next === 'team') S.team = await Api.get('/api/team');
   } catch (e) { fail(e); }
@@ -118,7 +120,7 @@ function shell(body) {
 }
 function render() {
   if (S.auth) { $('app').innerHTML = authView(); return; }
-  const views = { home: homeView, campaigns: campaignsView, builder: builderView, tracking: trackingView, emails: emailsView, account: accountView, team: teamView, contacts: contactsView, sequences: sequencesView, outbox: outboxView };
+  const views = { home: homeView, campaigns: campaignsView, builder: builderView, tracking: trackingView, emails: emailsView, account: accountView, email: emailSetupView, team: teamView, contacts: contactsView, sequences: sequencesView, outbox: outboxView };
   let body;
   if (S.loading) body = loadingPanel('Loading your workspace…');
   else if (S.fatal) body = `<div class="panel empty"><h3>We couldn’t load your workspace</h3><p>${esc(S.fatal)}</p><button class="primary" onclick="location.reload()">Try again</button></div>`;
@@ -132,6 +134,7 @@ function render() {
 function homeView() {
   const ctx = S.context.data, sm = S.summary || {}, b = S.chat.brief;
   return `<div class="heading"><div><div class="eyebrow">YOUR OUTBOUND WORKSPACE</div><h1>Hello, ${esc(ctx.sender)}.</h1><p>Let’s find the people who should hear from you.</p></div><button class="ghost" onclick="newCampaign()">${icon('plus')} Create manually</button></div>
+  <div class="notice" style="margin-bottom:18px"><span><button class="small" onclick="navigate('account')">1. Company context</button> → <button class="small" onclick="navigate('email')">2. Email setup</button></span></div>
   ${sm.sending_stopped ? `<div class="notice amber" style="margin-bottom:18px">${icon('shield')}Sending is stopped for this workspace. Re-enable it from the Send queue.</div>` : ''}
   ${!ctx.offering ? `<div class="notice amber" style="margin-bottom:18px">${icon('spark')}<span><strong>Welcome! Start with your company context.</strong> Tell us what you offer and who you help; it guides lead qualification and every email. <button class="small" onclick="navigate('account')">Set up company context</button></span></div>` : ''}
   ${(sm.failed_jobs || []).length ? `<div class="notice amber" style="margin-bottom:18px">${icon('shield')}Some background work failed recently: ${esc(sm.failed_jobs.map(j => j.type).join(', '))}. Open the campaign to retry.</div>` : ''}
@@ -264,7 +267,7 @@ function addAudienceFilter(k) { const v = $('custom-' + k).value.trim(); if (!v)
 function discoveryView(c) {
   const cfg = c.config, contacts = S.summary?.contacts ?? 0;
   return `<div class="stack"><section class="panel"><div class="panel-header"><div><h2>Build your discovery engine</h2><p>Choose where prospects come from and why they belong.</p></div>${icon('people')}</div><label>Prospect source</label>
-  <div class="choice-grid"><button class="choice ${cfg.source === 'import' ? 'active' : ''}" onclick="saveCampaign({config:{source:'import'}});render()"><span class="title">${icon('download')} Imported contacts</span><p>People you upload from your CRM or an authorized data provider, deduplicated across imports.</p>${badge(`${contacts} in workspace`, 'green')}</button>
+  <div class="choice-grid"><button class="choice ${cfg.source === 'import' ? 'active' : ''}" onclick="saveCampaign({config:{source:'import'}});render()"><span class="title">${icon('download')} AI Research</span><p>Pilot: evaluate your team-curated lead pool against campaign criteria. Up to 30 contacts per UTC day, for five days within seven days. No live web discovery.</p>${badge(`${contacts} in workspace`, 'green')}</button>
   <button class="choice ${cfg.source === 'salesnav' ? 'active' : ''}" onclick="saveCampaign({config:{source:'salesnav'}});render()"><span class="title">${icon('linkedin')} Sales Navigator export</span><p>Import a list exported through a method your subscription permits. Emails come from separate enrichment.</p>${badge('CSV import')}</button></div>
   <div class="choice" style="margin-top:12px;opacity:.6;cursor:not-allowed" aria-disabled="true"><span class="title">${icon('spark')} AI web research</span><p>Automated research needs an authorized search and enrichment provider. Not connected yet.</p>${badge('Unavailable')}</div>
   ${cfg.source === 'salesnav' ? `<div class="spacer"></div>${field('Saved search or list reference (optional)', 'sourceRef', cfg.sourceRef)}<div class="notice">${icon('shield')}This reference is kept for your records. The app never logs in to LinkedIn or scrapes profiles.</div>` : ''}
@@ -533,12 +536,12 @@ function tasksPanel() {
 }
 function taskCard(t) {
   const label = t.kind === 'initial' ? 'Initial email' : `Follow-up ${t.step_index + 1} · day ${t.day}`;
-  const state = t.status === 'held' ? badge('Held for review', 'amber') : t.blocked_reason ? badge('Blocked', 'amber') : t.status === 'pending' ? (t.due ? badge('Due now', 'green') : badge('Due ' + fmtDate(t.due_at))) : badge(t.status === 'sent' ? 'Sent · confirmed by you' : t.status, t.status === 'sent' ? 'green' : '');
+  const state = t.status === 'held' ? badge('Held for review', 'amber') : t.blocked_reason ? badge('Blocked', 'amber') : t.status === 'pending' ? (t.due ? badge('Due now', 'green') : badge('Due ' + fmtDate(t.due_at))) : badge(t.status === 'sent' ? (t.proof === 'smtp_accepted' ? 'SMTP accepted' : 'Sent · confirmed by you') : t.status, t.status === 'sent' ? 'green' : '');
   const mail = `mailto:${encodeURIComponent(t.to_email)}?subject=${encodeURIComponent(t.subject)}&body=${encodeURIComponent(t.body)}`;
   return `<article class="task-card"><div class="task-head"><span class="avatar">${initials(t.recipient)}</span><div class="grow"><strong>${esc(t.recipient)}</strong> <small class="subtle">${esc(t.company)} · ${esc(t.to_email)}</small><p class="subtle" style="margin:2px 0 0">${esc(label)} · ${esc(t.campaign_name)}</p></div>${state}</div>
   <div class="task-body"><strong>${esc(t.subject)}</strong><pre>${esc(t.body)}</pre></div>
   ${t.blocked_reason ? `<p class="helper">${icon('shield')} ${esc(t.blocked_reason)}</p>` : t.status_reason && t.status !== 'pending' ? `<p class="helper">${esc(t.status_reason)}</p>` : ''}
-  <div class="task-actions">${t.status === 'pending' ? `<a class="button small" href="${esc(mail)}">${icon('mail')} Open in email app</a><button class="small" onclick="copyTask('${esc(t.id)}')">${icon('copy')} Copy</button><button class="small primary" onclick="S.modal='confirm-sent';S.modalData='${esc(t.id)}';render()" ${t.blocked_reason ? 'disabled' : ''}>I sent this</button><button class="small ghost" onclick="skipTask('${esc(t.id)}')">Skip</button>`
+  <div class="task-actions">${t.status === 'pending' ? `<a class="button small" href="${esc(mail)}">${icon('mail')} Open in email app</a><button class="small" onclick="sendSmtp('${esc(t.id)}')" ${!t.due ? 'disabled' : ''}>Send via SMTP</button><button class="small" onclick="copyTask('${esc(t.id)}')">${icon('copy')} Copy</button><button class="small primary" onclick="S.modal='confirm-sent';S.modalData='${esc(t.id)}';render()" ${t.blocked_reason ? 'disabled' : ''}>I sent this</button><button class="small ghost" onclick="skipTask('${esc(t.id)}')">Skip</button>`
     : t.status === 'held' ? `<button class="small primary" onclick="releaseTask('${esc(t.id)}')" ${t.blocked_reason ? 'disabled' : ''}>Release for sending</button><button class="small ghost" onclick="skipTask('${esc(t.id)}')">Skip this step</button>`
     : t.status === 'sent' ? `<span class="helper" style="margin:0">Sent ${fmtDate(t.sent_at)}</span><button class="small" onclick="S.modal='outcome';S.modalData={contact:'${esc(t.contact_id)}',campaign:'${esc(t.campaign_id)}',name:'${esc(t.recipient)}'};render()">Record reply or outcome</button>` : ''}</div></article>`;
 }
@@ -678,14 +681,14 @@ async function removeSuppression(id) { try { await Api.del(`/api/suppressions/${
 function accountView() {
   const a = S.context.data, f = S.contextErrors || {};
   const fieldA = (label, k, multi = false) => `<div class="field"><label for="a-${k}">${label}</label>${multi ? `<textarea id="a-${k}">${esc(a[k])}</textarea>` : `<input id="a-${k}" value="${esc(a[k])}">`}${f[k] ? `<p class="helper" style="color:var(--red)">${esc(f[k])}</p>` : ''}</div>`;
-  return `<div class="heading"><div><div class="eyebrow">WORKSPACE SETTINGS</div><h1>The context behind every conversation.</h1><p>Tell your assistant who you are, who you help, and how you sound.</p></div><button class="primary" onclick="saveAccount()">Save company context</button></div><div class="wizard-grid"><div class="stack"><section class="panel"><div class="panel-header"><h2>Company & offering</h2>${badge('Version ' + S.context.version)}</div>${fieldA('Company name', 'company')}${fieldA('Website', 'website')}${fieldA('What do you offer?', 'offering', true)}${fieldA('Ideal customer profile', 'icp', true)}${fieldA('Approved proof points', 'proof', true)}${fieldA('Exclude from outreach (descriptions, company names, or domains)', 'exclusions', true)}</section>
-  <section class="panel"><div class="panel-header"><h2>Sender identity</h2>${badge('Manual sending')}</div><div class="two-col">${fieldA('Sender name', 'sender')}${fieldA('Email address', 'email')}</div>${fieldA('Signature', 'signature', true)}<div class="field"><label for="a-tone">Default tone</label><select id="a-tone">${['Conversational', 'Professional', 'Warm'].map(x => `<option ${a.tone === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div><div class="notice">${icon('shield')}This is the identity used in drafts. No mailbox is connected and no credentials are requested; you send from your own email app.</div></section></div>
+  return `<div class="heading"><div><div class="eyebrow">WORKSPACE SETTINGS</div><h1>1. Company context</h1><p>Next: connect your sending email.</p><p>Tell your assistant who you are, who you help, and how you sound.</p></div><button class="primary" onclick="saveAccount()">Save & continue to email setup</button></div><div class="wizard-grid"><div class="stack"><section class="panel"><div class="panel-header"><h2>Company & offering</h2>${badge('Version ' + S.context.version)}</div>${fieldA('Company name', 'company')}${fieldA('Website', 'website')}${fieldA('What do you offer?', 'offering', true)}${fieldA('Ideal customer profile', 'icp', true)}${fieldA('Approved proof points', 'proof', true)}${fieldA('Exclude from outreach (descriptions, company names, or domains)', 'exclusions', true)}</section>
+  <section class="panel"><div class="panel-header"><h2>Sender identity</h2>${badge('Manual sending')}</div><div class="two-col">${fieldA('Sender name', 'sender')}${fieldA('Email address', 'email')}</div>${fieldA('Signature', 'signature', true)}<div class="field"><label for="a-tone">Default tone</label><select id="a-tone">${['Conversational', 'Professional', 'Warm'].map(x => `<option ${a.tone === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div><div class="notice">${icon('shield')}This is the identity used in drafts. Connect SMTP in Email setup to send from this platform, or use your email app. SMTP acceptance does not confirm delivery.</div></section></div>
   <aside class="wizard-aside panel"><h2>One source of context</h2><div class="timeline"><div class="timeline-item"><span class="time-dot">1</span><div><strong>Qualify the right people</strong><p>Audience, offering, and exclusions guide fit.</p></div></div><div class="timeline-item"><span class="time-dot">2</span><div><strong>Write in your voice</strong><p>Your tone and proof points shape the draft.</p></div></div><div class="timeline-item"><span class="time-dot">3</span><div><strong>Add campaign intent</strong><p>A chat brief adds context to each new campaign.</p></div></div></div><p class="helper">Each save creates a new version. Campaigns keep the version they were created with until you choose to update them, so approved emails never change silently.</p></aside></div>`;
 }
 async function saveAccount() {
   const data = {};
   for (const k of Object.keys(S.context.data)) { const el = $('a-' + k); data[k] = el ? el.value.trim() : S.context.data[k]; }
-  try { S.context = await Api.patch('/api/account-context', { version: S.context.version, data }); S.contextErrors = null; render(); toast(`Company context saved (version ${S.context.version}).`); }
+  try { S.context = await Api.patch('/api/account-context', { version: S.context.version, data }); S.contextErrors = null; await navigate('email'); toast(`Company context saved (version ${S.context.version}).`); }
   catch (e) {
     if (e.status === 422) { S.contextErrors = e.fields; S.context = { ...S.context, data }; render(); toast(e.message); }
     else if (e.status === 409) { toast('Company context changed elsewhere. Reloaded the latest version; reapply your edits.'); S.context = e.body.current; render(); }
@@ -774,7 +777,7 @@ function authView() {
   const banner = inv ? `<div class="context-banner">${icon('people')}<div><strong>${esc(inv.inviter || 'A teammate')} invited you to ${esc(inv.workspace)}</strong><p>Invitation for ${esc(inv.email)}.</p></div></div>` : '';
   const err = a.error ? `<div class="error" role="alert">${esc(a.error)}${a.unverified ? ` <button class="small" onclick="resendVerification()">Send a new link</button>` : ''}</div>` : '';
   const busy = a.busy ? 'disabled' : '';
-  const card = inner => `<div class="auth-wrap"><div class="auth-brand"><span class="logo">↗</span>outbound<span style="color:#7fb24a">.</span></div><section class="panel auth-card">${inner}</section><p class="helper auth-foot">${icon('shield')} Your outreach is sent from your own mailbox. We never ask for your email password.</p></div>`;
+  const card = inner => `<div class="auth-wrap"><div class="auth-brand"><span class="logo">↗</span>outbound<span style="color:#7fb24a">.</span></div><section class="panel auth-card">${inner}</section><p class="helper auth-foot">${icon('shield')} Your outreach is sent from your own mailbox. SMTP setup uses a provider app password.</p></div>`;
   if (a.view === 'check') return card(`<div class="empty" style="padding:8px 0"><div class="ai-mark">${icon('mail')}</div><h2>Check your email</h2><p>${esc(a.message || 'If an account matches, we’ve sent you a link.')}</p><p class="helper">Didn’t get it? Check spam, or wait a minute and try again.</p><button class="stretch" onclick="showAuth('signin')">Back to sign in</button></div>`);
   if (a.view === 'reset') return card(`<h2>Choose a new password</h2><p class="subtle">At least 10 characters. Signing in elsewhere will end.</p>${err}<form onsubmit="event.preventDefault();resetPassword()">${authField('New password', 'password', 'password', 'new-password')}${authField('Confirm password', 'confirm', 'password', 'new-password')}<button class="primary stretch" ${busy}>Save password and sign in</button></form>`);
   if (a.view === 'forgot') return card(`<h2>Reset your password</h2><p class="subtle">We’ll email you a link to choose a new one.</p>${err}<form onsubmit="event.preventDefault();forgotPassword()">${authField('Email', 'email', 'email', 'email', a.email)}<button class="primary stretch" ${busy}>Send reset link</button></form><p class="auth-switch"><button class="ghost small" onclick="showAuth('signin')">Back to sign in</button></p>`);
@@ -866,3 +869,29 @@ async function signOutEverywhere() { try { await Api.post('/api/auth/logout-all'
 render();
 authConfig().then(c => { S.authConfig = c; });
 boot();
+
+async function sendSmtp(id) { const t=S.tasks.items.find(x=>x.id===id); if(t?.kind==='followup'&&!confirm('Have you checked your inbox and confirmed there is no reply or opt-out from this recipient?')) return; try { await Api.post('/api/tasks/'+id+'/send-smtp',{no_reply_confirmed:t?.kind==='followup'}); toast('SMTP server accepted the message. Delivery is not yet confirmed.'); await loadTasks(); render(); } catch(e){fail(e);} }
+function emailSetupView() {
+ const m=S.mailbox||{}, owner=S.session?.user?.role==='owner';
+ const field=(key,label,value='',type='text')=>`<div class="field"><label for="smtp-${key}">${label}</label><input id="smtp-${key}" type="${type}" value="${esc(value)}" autocomplete="${key==='password'?'new-password':'off'}" ${!owner?'disabled':''}></div>`;
+ return `<div class="heading"><div><div class="eyebrow">WORKSPACE ONBOARDING · STEP 2 OF 2</div><h1>Connect your sending email.</h1><p>Connect once. Review and launch campaigns separately.</p></div><button onclick="navigate('account')">← Company context</button></div>
+ <div class="wizard-grid"><section class="panel"><div class="panel-header"><h2>${m.sender?'Manage your connection':'Email setup'}</h2>${badge(m.sender?'Connection tested':'Not connected',m.sender?'green':'amber')}</div>
+ ${m.sender?`<div class="notice"><span>Saved sender: ${esc(m.sender)}<br>Last tested: ${fmtDate(m.updated_at)}. SMTP acceptance does not confirm inbox delivery.</span></div>`:''}
+ ${!owner?'<p>Only the workspace owner can connect or disconnect a mailbox.</p>':''}
+ <div class="field"><label for="smtp-provider">Provider</label><select id="smtp-provider" onchange="smtpPreset(this.value)" ${!owner?'disabled':''}><option value="">Choose a provider</option><option value="gmail">Gmail / Google Workspace (app password where available)</option><option value="custom">Other approved SMTP provider</option></select></div>
+ ${field('host','SMTP server')}${field('port','Port (465 or 587)','587','number')}${field('user','SMTP username')}${field('password',m.sender?'New app password (required to reconnect)':'Provider app password','','password')}${field('sender','Sender email',S.context.data.email,'email')}${field('postal_address','Business postal address',m.postal_address||'')}
+ <p class="helper">Use a provider-issued app password or SMTP credential, not your normal account password. Your provider or administrator must permit SMTP. Saving sends one test email to the sender address shown above.</p>
+ <button class="primary" onclick="connectSmtp()" ${!owner||S.smtpBusy?'disabled':''}>${S.smtpBusy?'Testing connection…':m.sender?'Test & replace connection':'Test & connect'}</button>
+ ${m.sender?`<button class="ghost" onclick="disconnectSmtp()" ${!owner||S.smtpBusy?'disabled':''}>Disconnect</button><button onclick="navigate('home')">Continue to workspace →</button>`:''}</section>
+ <aside class="panel wizard-aside"><h2>Your credentials stay private</h2><p>Encrypted before database storage. Saved passwords are never returned to this page or included in AI prompts.</p><h3>Before using campaigns</h3><p>Confirm the test email arrived. Configure your domain’s SPF, DKIM and DMARC with your email administrator.</p><h3>What SMTP does</h3><p>Sends email. It does not synchronize replies or bounces. Follow-ups still need an inbox check.</p><p>Disconnect removes the active credentials. Also revoke the app password with your provider if you no longer want it used.</p></aside></div>`;
+}
+function smtpPreset(provider){if(provider==='gmail'){$('smtp-host').value='smtp.gmail.com';$('smtp-port').value='465';$('smtp-user').value=S.context.data.email;}else{$('smtp-host').value='';$('smtp-port').value='587';}}
+async function connectSmtp(){
+ if(S.smtpBusy)return;
+ const body=Object.fromEntries(['host','port','user','password','sender','postal_address'].map(k=>[k,$('smtp-'+k).value]));
+ S.smtpBusy=true; $('smtp-password').value='';
+ try{S.mailbox=await Api.post('/api/mailbox',body);toast('Connection saved. Check your inbox for the test email.');}
+ catch(e){toast(e.message||'Connection failed.');}
+ finally{body.password='';S.smtpBusy=false;render();}
+}
+async function disconnectSmtp(){if(!confirm('Disconnect this mailbox? Future SMTP sends will be blocked.'))return;try{await Api.del('/api/mailbox');S.mailbox={sender:null};render();toast('Mailbox disconnected. Revoke its app password with your provider if no longer needed.');}catch(e){fail(e);}}

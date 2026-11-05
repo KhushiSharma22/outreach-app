@@ -12,7 +12,12 @@ export const SESSION_COOKIE = 'ob_session';
 const OAUTH_COOKIE = 'ob_oauth';
 const GOOGLE_AUTH_URL = () => process.env.GOOGLE_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = () => process.env.GOOGLE_TOKEN_URL || 'https://oauth2.googleapis.com/token';
-export const googleEnabled = () => !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+// Google implementation retained below for a future release; disabled at both endpoints.
+export const googleEnabled = () => false;
+export const emailAllowed = email => new Set((process.env.ALLOWED_EMAILS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean)).has(String(email || '').trim().toLowerCase());
+export function requireAllowed(email) {
+  if (!emailAllowed(email)) throw new AppError(403, 'access_restricted', 'This private pilot is available only to approved email addresses. Contact the team for access.');
+}
 
 // ---------- Passwords ----------
 const SCRYPT = { N: 32768, r: 8, p: 1 };
@@ -73,6 +78,7 @@ async function consumeToken(db, kind, token, message) {
 const userByEmail = async (db, email) => await db.get('SELECT * FROM users WHERE lower(email)=lower(?)', [email]);
 // Creates a user. With an invite they join that workspace; otherwise they get their own.
 async function createUser(db, { name, email, password_hash = null, verified = false, google_sub = null, company, invite = null }) {
+  requireAllowed(email);
   return await db.tx(async () => {
     const userId = id(), t = now();
     const wsId = invite ? invite.workspace_id : null;
@@ -96,6 +102,7 @@ async function createUser(db, { name, email, password_hash = null, verified = fa
   });
 }
 export async function createSession(db, user, { workspaceId, method, userAgent }) {
+  requireAllowed(user.email);
   const ws = workspaceId && await db.get('SELECT workspace_id FROM memberships WHERE user_id=? AND workspace_id=?', [user.id, workspaceId])
     || await db.get('SELECT workspace_id FROM memberships WHERE user_id=? ORDER BY CASE WHEN workspace_id=? THEN 0 ELSE 1 END, created_at LIMIT 1', [user.id, user.workspace_id]);
   if (!ws) throw new AppError(403, 'no_workspace', 'This account is not a member of any workspace.');
@@ -109,8 +116,9 @@ export async function sessionFromToken(db, token) {
   if (!token) return null;
   const s = await db.get('SELECT * FROM sessions WHERE token_hash=?', [hash(token)]);
   if (!s || Date.parse(s.expires_at) < Date.now()) return null;
+  if(s.method==='local_password' && (process.env.LOCAL_SKIP_EMAIL_VERIFICATION!=='true'||process.env.NODE_ENV==='production'||process.env.VERCEL)) return null;
   const user = await db.get('SELECT u.*, m.role member_role FROM users u JOIN memberships m ON m.user_id=u.id AND m.workspace_id=? WHERE u.id=?', [s.workspace_id, s.user_id]);
-  if (!user) return null;
+  if (!user || !emailAllowed(user.email)) return null;
   if (Date.now() - Date.parse(s.last_seen_at) > 3600e3) await db.run('UPDATE sessions SET last_seen_at=?, expires_at=? WHERE id=?', [now(), new Date(Date.now() + SESSION_TTL).toISOString(), s.id]);
   return { user: { ...user, role: user.member_role }, session: s };
 }
@@ -121,6 +129,7 @@ export function cookie(name, value, { maxAge, secure, path = '/', sameSite = 'La
 // ---------- Service ----------
 export function createAuth({ db, publicUrl }) {
   const secure = publicUrl.startsWith('https://');
+  const localVerificationSkip = req => process.env.LOCAL_SKIP_EMAIL_VERIFICATION === 'true' && process.env.NODE_ENV !== 'production' && !process.env.VERCEL && ['localhost','127.0.0.1','[::1]'].includes(new URL(publicUrl).hostname) && ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket?.remoteAddress);
   const link = path => `${publicUrl}/#/${path}`;
   const sessionCookie = token => cookie(SESSION_COOKIE, token, { maxAge: SESSION_TTL / 1000, secure });
   const clearSession = cookie(SESSION_COOKIE, '', { maxAge: 0, secure });
@@ -134,11 +143,12 @@ export function createAuth({ db, publicUrl }) {
   }
 
   return {
-    config: () => ({ google: googleEnabled(), password: true }),
+    config: () => ({ google: false, password: true, restricted: true }),
 
     async signup(out, req, body) {
       const name = String(body.name || '').trim(), email = normEmail(body.email), company = String(body.company || '').trim();
       await limit(db, 'signup:' + clientIp(req), 20, 3600e3);
+      requireAllowed(email);
       const fields = {};
       if (!name) fields.name = 'Enter your name.';
       if (!email || !EMAIL_RE.test(email)) fields.email = 'Enter a valid email address.';
@@ -148,6 +158,10 @@ export function createAuth({ db, publicUrl }) {
       const invite = body.invite_token ? await invitation(body.invite_token) : null;
       const existing = await userByEmail(db, email);
       if (existing) {
+        if(localVerificationSkip(req)) {
+          if(!await verifyPassword(String(body.password),existing.password_hash)) throw new AppError(401,'invalid_credentials','Account already exists. Sign in with your existing password.');
+          return signIn(out,existing,'local_password',req);
+        }
         // Same response as a new sign-up, so the form can't be used to discover accounts.
         await sendMail({ to: email, subject: 'You already have an Outbound account', text: `Someone (hopefully you) tried to create an Outbound account with this email address, but you already have one.\n\nSign in instead, or reset your password if you’ve forgotten it.`, action: { label: 'Sign in', url: link('signin') } });
         return { status: 'check_email' };
@@ -160,6 +174,7 @@ export function createAuth({ db, publicUrl }) {
         return await signIn(out, user, 'password', req, invite.workspace_id);
       }
       const user = await createUser(db, { name, email, password_hash, company });
+      if(localVerificationSkip(req)) return signIn(out,user,'local_password',req);
       try { await sendVerification(user); }
       catch (e) { if (e.code !== 'email_failed') throw e; throw new AppError(503, 'email_failed', `Your account was created, but ${e.message.charAt(0).toLowerCase() + e.message.slice(1)} Then sign in and choose “Send a new link”.`); }
       return { status: 'check_email' };
@@ -171,7 +186,8 @@ export function createAuth({ db, publicUrl }) {
       if (email) await limit(db, 'login:' + email, 10, 900e3);
       const user = email && await userByEmail(db, email);
       const ok = await verifyPassword(String(body.password ?? ''), user?.password_hash);
-      if (!user || !ok) throw new AppError(401, 'invalid_credentials', 'Email or password is incorrect.');
+      if (!user || !ok || !emailAllowed(email)) throw new AppError(401, 'invalid_credentials', 'Email or password is incorrect.');
+      if (!user.email_verified_at && localVerificationSkip(req)) return signIn(out,user,'local_password',req);
       if (!user.email_verified_at) throw new AppError(403, 'email_unverified', 'Confirm your email address first. Check your inbox for the link, or send a new one.');
       return await signIn(out, user, 'password', req);
     },
@@ -328,6 +344,7 @@ export function createAuth({ db, publicUrl }) {
     },
     // Returns the URL to redirect the browser to.
     async googleCallback(out, req, query) {
+      throw new AppError(404, 'google_disabled', 'Google sign-in is disabled for this pilot.');
       const fail = code => `${publicUrl}/#/signin?error=${code}`;
       out.setCookie(cookie(OAUTH_COOKIE, '', { maxAge: 0, secure, path: '/auth/google' }));
       if (query.error) return fail('google_cancelled');

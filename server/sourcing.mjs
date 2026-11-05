@@ -185,6 +185,13 @@ export async function startDiscovery(ctx, campaignId, { trigger = 'manual', occu
   const batch = ((await ctx.db.get('SELECT max(batch) b FROM discovery_runs WHERE campaign_id=?', [c.id])).b || 0) + 1;
   const run = { id: id(), campaign_id: c.id, batch, config_version: c.config_version, trigger, occurrence_date: occurrenceDate, status: 'queued', progress: '{}', created_at: now() };
   await ctx.db.tx(async () => {
+    // Serialize allocation across campaigns and instances (also works on SQLite).
+    await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?', [ctx.ws]);
+    const allocations = await ctx.db.all('SELECT * FROM pilot_allocations WHERE workspace_id=? ORDER BY day', [ctx.ws]);
+    const day = now().slice(0, 10); // A fixed UTC boundary cannot be bypassed by editing campaign timezone.
+    if (allocations.some(a => a.day === day)) throw conflict('daily_limit', 'Today’s pilot batch has already been allocated. Maximum 30 leads per day across all campaigns (UTC).');
+    if (allocations.length >= 5 || (allocations.length && Date.parse(day) - Date.parse(allocations[0].day) >= 7 * 864e5)) throw conflict('pilot_complete', 'Your five-day pilot allocation has ended. Contact the team to extend your pilot.');
+    await ctx.db.insert('pilot_allocations', {workspace_id:ctx.ws, day, run_id:run.id, created_at:now()});
     await ctx.db.insert('discovery_runs', run);
     await ctx.jobs.enqueue(ctx.ws, 'discovery', { run_id: run.id }, { dedupe: 'discovery:' + run.id });
     await ctx.db.audit(ctx.ws, c.id, 'discovery.queued', `Discovery batch ${batch} queued`, { run_id: run.id, trigger }, ctx.user?.id);
@@ -209,13 +216,16 @@ export async function executeDiscovery(ctx, runId) {
   // A retried run restarts cleanly: drop leads it created that have no downstream work.
   await ctx.db.run('DELETE FROM campaign_leads WHERE run_id=? AND id NOT IN (SELECT lead_id FROM drafts)', [run.id]);
   const today = localView(Date.now(), config.schedule.timezone || 'UTC').date;
-  const candidates = await ctx.db.all(`SELECT ct.*, co.name company, co.domain, co.industry, co.employees, co.location company_location, co.relationship,
+  let candidates = await ctx.db.all(`SELECT ct.*, co.name company, co.domain, co.industry, co.employees, co.location company_location, co.relationship,
       s.reason suppressed,
       (SELECT c2.name FROM messages m JOIN campaigns c2 ON c2.id=m.campaign_id WHERE m.contact_id=ct.id AND m.campaign_id<>:cid LIMIT 1) other_campaign
     FROM contacts ct JOIN companies co ON co.id=ct.company_id
     LEFT JOIN suppressions s ON s.workspace_id=ct.workspace_id AND s.email=ct.email
-    WHERE ct.workspace_id=:ws AND NOT EXISTS (SELECT 1 FROM campaign_leads l WHERE l.campaign_id=:cid AND l.contact_id=ct.id)
-    ORDER BY ct.created_at, ct.id LIMIT :lim`, { ws: ctx.ws, cid: c.id, lim: MAX_CANDIDATES() });
+    WHERE ct.workspace_id=:ws AND NOT EXISTS (SELECT 1 FROM pilot_contacts pc WHERE pc.workspace_id=:ws AND pc.contact_id=ct.id AND pc.run_id<>:rid) AND NOT EXISTS (SELECT 1 FROM campaign_leads l WHERE l.campaign_id=:cid AND l.contact_id=ct.id)
+    ORDER BY ct.created_at, ct.id LIMIT :lim`, { ws: ctx.ws, cid: c.id, rid:run.id, lim:30 });
+  await ctx.db.tx(async () => {
+    for (const candidate of candidates) await ctx.db.run('INSERT INTO pilot_contacts(workspace_id, contact_id, run_id) VALUES(?,?,?) ON CONFLICT(workspace_id, contact_id) DO NOTHING', [ctx.ws, candidate.id, run.id]);
+  });
   const progress = async p => await ctx.db.run('UPDATE discovery_runs SET progress=? WHERE id=?', [JSON.stringify(p), run.id]);
   await progress({ stage: 'checking', checked: 0, total: candidates.length });
   const assessed = [];

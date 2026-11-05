@@ -9,6 +9,7 @@ import { testDatabase } from './helpers.mjs';
 
 process.env.AI_PROVIDER = 'offline';
 process.env.NODE_ENV = 'test';
+process.env.OPERATOR_EMAILS = 'maya@northstar.example';
 let app, base, ctx, els, tdb;
 
 before(async () => {
@@ -35,7 +36,7 @@ async function until(fn, ms = 4000) { const t = Date.now(); while (!fn()) { if (
 
 test('every screen renders from the API, and the full manual-send journey works end to end', async () => {
   assert.match(html(), /Your next campaign starts with a conversation/);
-  for (const v of ['campaigns', 'contacts', 'sequences', 'outbox', 'account', 'home']) { await run(`navigate('${v}')`); assert.ok(html().length > 500, v); }
+  for (const v of ['campaigns', 'contacts', 'sequences', 'outbox', 'account', 'email', 'home']) { await run(`navigate('${v}')`); assert.ok(html().length > 500, v); }
 
   await run(`navigate('contacts')`);
   await run(`importCsvText('sample.csv', ${JSON.stringify(sampleCsv())}, 'csv')`);
@@ -58,8 +59,10 @@ test('every screen renders from the API, and the full manual-send journey works 
   await run(`saveCampaign({config:{signals:['Hiring','Funding','New leadership','Expansion']}},{now:true})`);
   await run('continueFlow()');                 // → review leads
   await run('discoverBatch()');
-  await settle(); await until(() => run('S.leads && S.leads.selected') === 28);
-  assert.match(html(), /Quality-checked prospects/);
+  await settle(); await until(() => run('S.leads && S.leads.selected') > 0 && html().includes('discovery-hero'));
+  const selectedCount=run('S.leads.selected');
+  assert.ok(selectedCount<=30);
+  assert.match(html(), /Quality-checked prospects|Quality first/);
 
   await run('continueFlow()');                 // → email studio, drafts generated
   await settle(); await until(() => run('S.drafts && S.drafts.items.every(x=>x.draft)'));
@@ -67,7 +70,7 @@ test('every screen renders from the API, and the full manual-send journey works 
   assert.match(html(), /Emails that sound like you/);
   await run('openBulk()');
   await run('approveAll()');
-  assert.equal(run('S.drafts.approved'), 28);
+  assert.equal(run('S.drafts.approved'), selectedCount);
 
   await run('continueFlow()');                 // → schedule
   assert.match(html(), /Manual send tasks/);

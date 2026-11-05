@@ -13,6 +13,10 @@ export const now = () => new Date().toISOString();
 export const hash = (...parts) => createHash('sha256').update(parts.map(p => typeof p === 'string' ? p : JSON.stringify(p)).join('\u0000')).digest('hex');
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS mailboxes(workspace_id TEXT PRIMARY KEY, sender TEXT NOT NULL, postal_address TEXT NOT NULL, credentials TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS optout_tokens(token TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, email TEXT NOT NULL, UNIQUE(workspace_id,email));
+CREATE TABLE IF NOT EXISTS pilot_allocations(workspace_id TEXT NOT NULL, day TEXT NOT NULL, run_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, PRIMARY KEY(workspace_id, day));
+CREATE TABLE IF NOT EXISTS pilot_contacts(workspace_id TEXT NOT NULL, contact_id TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(workspace_id, contact_id));
 CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, name TEXT NOT NULL, sending_stopped INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, email TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'owner', token_hash TEXT UNIQUE, created_at TEXT NOT NULL, password_hash TEXT, email_verified_at TEXT, google_sub TEXT, last_login_at TEXT);
 CREATE TABLE IF NOT EXISTS memberships(workspace_id TEXT NOT NULL REFERENCES workspaces(id), user_id TEXT NOT NULL REFERENCES users(id), role TEXT NOT NULL, invited_by TEXT, created_at TEXT NOT NULL, PRIMARY KEY(workspace_id, user_id));

@@ -12,11 +12,12 @@ import * as campaigns from './campaigns.mjs';
 import * as sourcing from './sourcing.mjs';
 import * as drafts from './drafts.mjs';
 import * as sequences from './sequences.mjs';
+import * as mailbox from './mailbox.mjs';
 import * as delivery from './delivery.mjs';
 import * as reporting from './reporting.mjs';
 import { createJobs, registerHandlers, runScheduler } from './jobs.mjs';
 import { sampleCsv } from './sample.mjs';
-import { createAuth, sessionFromToken, SESSION_COOKIE } from './auth.mjs';
+import { createAuth, sessionFromToken, SESSION_COOKIE, emailAllowed } from './auth.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STATIC = join(ROOT, 'dist');
@@ -37,6 +38,7 @@ export async function seedWorkspace(db, { name = 'Northstar', userName = 'Maya',
 
 export async function createApp({ databaseUrl = process.env.DATABASE_URL || null, dbFile = process.env.DB_FILE || join(ROOT, 'data', 'outreach.db'), workers = true, serverless = !!process.env.VERCEL, authMode = process.env.AUTH_MODE || 'accounts',
   publicUrl = process.env.PUBLIC_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : `http://127.0.0.1:${process.env.PORT || 4173}`) } = {}) {
+  if (authMode === 'dev' && (process.env.NODE_ENV === 'production' || process.env.VERCEL)) throw new Error('Development authentication is forbidden in production.');
   if (process.env.VERCEL && !databaseUrl) throw new Error('DATABASE_URL is required on Vercel: serverless functions have no persistent disk for SQLite.');
   const db = await openDb(databaseUrl ? { url: databaseUrl } : { file: dbFile });
   const jobs = createJobs(db, log, { serverless });
@@ -64,7 +66,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
     const bearer = (req.headers.authorization || '').match(/^Bearer (.+)$/)?.[1];
     if (bearer) {
       const user = await db.get('SELECT u.*, m.role member_role FROM users u JOIN memberships m ON m.user_id=u.id AND m.workspace_id=u.workspace_id WHERE u.token_hash=?', [hash(bearer)]);
-      return user ? { user: { ...user, role: user.member_role }, ws: user.workspace_id, viaCookie: false } : null;
+      return user && (authMode === 'dev' || emailAllowed(user.email)) ? { user: { ...user, role: user.member_role }, ws: user.workspace_id, viaCookie: false } : null;
     }
     const raw = (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith(SESSION_COOKIE + '='))?.slice(SESSION_COOKIE.length + 1);
     let token = null; try { token = raw && decodeURIComponent(raw); } catch { /* malformed cookie */ }
@@ -145,8 +147,12 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
   route('POST', '/api/send-tasks/:id/release', async (ctx, p) => await delivery.releaseTask(ctx, p.id));
   route('POST', '/api/contacts/:id/outcomes', async (ctx, p, body) => await delivery.recordOutcome(ctx, p.id, body), { status: 201 });
   route('GET', '/api/contacts', async (ctx, p, b, q) => await reporting.listContacts(ctx, q));
+  route('POST', '/api/tasks/:id/send-smtp', (ctx,p,body) => delivery.smtpSend(ctx,p.id,publicUrl,body));
+  route('DELETE', '/api/mailbox', async ctx => {if(ctx.user.role!=='owner') throw new AppError(403,'owner_only','Owner access required.'); await ctx.db.run('DELETE FROM mailboxes WHERE workspace_id=?',[ctx.ws]); await ctx.db.audit(ctx.ws,null,'mailbox.disconnected','SMTP credentials removed',{},ctx.user.id); return {disconnected:true};});
+  route('GET', '/api/mailbox', ctx => mailbox.status(ctx));
+  route('POST', '/api/mailbox', (ctx,p,body) => {if((process.env.NODE_ENV==='production'||process.env.VERCEL)&&!publicUrl.startsWith('https://')) throw new AppError(503,'https_required','Configure HTTPS before connecting a mailbox.'); return mailbox.connect(ctx,body);});
   route('GET', '/api/imports', async ctx => ({ items: await reporting.listImports(ctx) }));
-  route('POST', '/api/imports', async (ctx, p, body) => await sourcing.importCsv(ctx, body), { status: 201, idem: true });
+  route('POST', '/api/imports', async (ctx, p, body) => { if (!(process.env.OPERATOR_EMAILS || '').split(',').map(x=>x.trim().toLowerCase()).includes(ctx.user.email.toLowerCase())) throw new AppError(403,'operator_only','Lead imports are managed by the pilot team.'); return sourcing.importCsv(ctx, body); }, { status: 201, idem: true });
   route('GET', '/api/suppressions', async ctx => ({ items: await reporting.listSuppressions(ctx) }));
   route('POST', '/api/suppressions', async (ctx, p, body) => await delivery.addSuppression(ctx, { email: body.email, reason: 'manual', note: body.note }), { status: 201 });
   route('DELETE', '/api/suppressions/:id', async (ctx, p) => await delivery.removeSuppression(ctx, p.id));
@@ -198,7 +204,15 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
     const url = new URL(req.url, 'http://localhost'), started = Date.now();
     const cookies = [], out = { setCookie: c => cookies.push(c), headers: () => cookies.length ? { 'set-cookie': cookies } : {} };
     try {
-      if (req.method === 'GET' && url.pathname === '/auth/google/start') redirect(res, await auth.googleStart(out, Object.fromEntries(url.searchParams)), out.headers());
+      if (/^\/unsubscribe\/[a-f0-9]{64}$/.test(url.pathname) && ['GET','POST'].includes(req.method)) {
+        const token=url.pathname.split('/').pop();
+        const record=await db.get('SELECT * FROM optout_tokens WHERE token=?',[token]);
+        if(!record) throw notFound('Unsubscribe link');
+        if(req.method==='POST') await delivery.addSuppression(ctxFor(record.workspace_id),{email:record.email,reason:'opt_out'});
+        res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','referrer-policy':'no-referrer','content-security-policy':"default-src 'none'; form-action 'self'; frame-ancestors 'none'"});
+        res.end(req.method==='POST' ? '<h1>You are unsubscribed</h1><p>No further marketing emails will be sent by this workspace.</p>' : '<h1>Stop marketing emails</h1><form method="POST"><button>Unsubscribe</button></form>');
+      }
+      else if (req.method === 'GET' && url.pathname === '/auth/google/start') redirect(res, await auth.googleStart(out, Object.fromEntries(url.searchParams)), out.headers());
       else if (req.method === 'GET' && url.pathname === '/auth/google/callback') redirect(res, await auth.googleCallback(out, req, Object.fromEntries(url.searchParams)), out.headers());
       else if (url.pathname === '/sample-contacts.csv') { res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="sample-contacts.csv"' }); res.end(sampleCsv()); }
       else if (url.pathname.startsWith('/api/')) await handleApi(req, res, url, out);

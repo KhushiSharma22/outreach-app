@@ -1,6 +1,8 @@
 // Launch, campaign state, manual send tasks, outcomes, and suppression.
 // Delivery is manual: the app prepares approved messages; the user sends them from their own
 // mailbox and confirms. A confirmation is recorded as user-confirmed, never as provider-verified.
+import { randomBytes } from 'node:crypto';
+import { transport } from './mailbox.mjs';
 import { id, now } from './db.mjs';
 import { conflict, invalid, notFound, EMAIL_RE, normEmail, localView } from './lib.mjs';
 import { loadCampaign, scheduleErrors } from './campaigns.mjs';
@@ -196,7 +198,13 @@ export async function addSuppression(ctx, { email, reason = 'manual', contact_id
   if (!email || !EMAIL_RE.test(email)) throw invalid('Enter a valid email address.');
   if (!['manual', 'opt_out', 'bounce'].includes(reason)) throw invalid('Unknown suppression reason.');
   const existing = await ctx.db.get('SELECT * FROM suppressions WHERE workspace_id=? AND email=?', [ctx.ws, email]);
-  if (existing) return existing;
+  if (existing) {
+    if(reason === 'opt_out' && existing.reason !== 'opt_out') {
+      await ctx.db.run("UPDATE suppressions SET reason='opt_out' WHERE id=?",[existing.id]);
+      return {...existing, reason:'opt_out'};
+    }
+    return existing;
+  }
   const ct = contact_id || (await ctx.db.get('SELECT id FROM contacts WHERE workspace_id=? AND email=?', [ctx.ws, email]))?.id || null;
   const row = { id: id(), workspace_id: ctx.ws, email, contact_id: ct, reason, note: String(note).slice(0, 500), actor: ctx.user?.id, created_at: now() };
   await ctx.db.tx(async () => {
@@ -221,4 +229,40 @@ export async function setSendingStopped(ctx, stopped) {
   await ctx.db.run('UPDATE workspaces SET sending_stopped=? WHERE id=?', [stopped ? 1 : 0, ctx.ws]);
   await ctx.db.audit(ctx.ws, null, stopped ? 'workspace.sending_stopped' : 'workspace.sending_resumed', stopped ? 'All sending stopped for the workspace' : 'Sending re-enabled for the workspace', {}, ctx.user?.id);
   return { sending_stopped: !!stopped };
+}
+
+export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false} = {}) {
+ if (!publicUrl.startsWith('https://')) throw invalid('A public HTTPS URL is required for unsubscribe links.');
+ const {row,client}=await transport(ctx);
+ let t, token;
+ await ctx.db.tx(async()=>{
+  await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
+  t=await loadTask(ctx,taskId);
+  if(t.kind==='followup' && no_reply_confirmed!==true) throw invalid('Check your inbox and confirm no reply or opt-out before this follow-up.');
+  if(t.status!=='pending'||blockedReason(t)||Date.parse(t.due_at)>Date.now()) throw conflict('blocked','This task is not eligible for sending.');
+  if(t.kind==='initial'&&!await validApproval(ctx,t.draft_revision_id)) throw conflict('approval_invalid','Review and approve this message again.');
+  const n=await ctx.db.get("SELECT count(*) n FROM send_tasks WHERE workspace_id=? AND status IN ('sending','sent','unknown') AND updated_at>=?",[ctx.ws,now().slice(0,10)]);
+  if(Number(n.n)>=30) throw conflict('daily_send_limit','Daily safety cap reached: 30 emails including follow-ups (UTC).');
+  const previous=await ctx.db.get('SELECT token FROM optout_tokens WHERE workspace_id=? AND email=?',[ctx.ws,t.to_email]);
+  token=previous?.token||randomBytes(32).toString('hex');
+  if(!previous) await ctx.db.insert('optout_tokens',{token,workspace_id:ctx.ws,email:t.to_email});
+  await ctx.db.run("UPDATE send_tasks SET status='sending',updated_at=? WHERE id=?",[now(),t.id]);
+ });
+ const url=publicUrl+'/unsubscribe/'+token;
+ const body=t.body+'\n\nBusiness marketing message\n'+row.postal_address+'\nUnsubscribe: '+url;
+ try {
+  // Last check before handing the message to the provider.
+  const current=await loadTask(ctx,t.id);
+  if(blockedReason({...current,status:'pending'})) throw new Error('Eligibility changed before dispatch');
+  await client.sendMail({from:row.sender,to:t.to_email,subject:t.subject,text:body,disableFileAccess:true,disableUrlAccess:true});
+ } catch {
+  await ctx.db.run("UPDATE send_tasks SET status='unknown', status_reason='SMTP outcome uncertain. Review mailbox before any retry.',updated_at=? WHERE id=?",[now(),t.id]);
+  throw conflict('send_uncertain','Sending could not be confirmed. Check the mailbox; this task will not retry automatically.');
+ } finally {client.close();}
+ await ctx.db.tx(async()=>{
+  await ctx.db.run("UPDATE send_tasks SET status='sent',confirmed_at=?,updated_at=? WHERE id=?",[now(),now(),t.id]);
+  await ctx.db.insert('messages',{id:id(),workspace_id:ctx.ws,campaign_id:t.campaign_id,send_task_id:t.id,contact_id:t.contact_id,to_email:t.to_email,subject:t.subject,body,sent_at:now(),proof:'smtp_accepted',recorded_by:ctx.user.id,created_at:now()});
+  if(t.kind==='initial') await enrollOnSend(ctx,t.campaign_id,t.lead_id); else await advanceEnrollment(ctx,t.enrollment_id,t.step_index);
+ });
+ return shapeTask(await loadTask(ctx,t.id));
 }
