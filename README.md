@@ -68,8 +68,9 @@ To try the whole flow quickly, sign in with an address in `OPERATOR_EMAILS` and 
 | `PUBLIC_URL` | `http://127.0.0.1:PORT` | Address users reach. Used in email links and the Google redirect; `https://` turns on secure cookies. Required when binding beyond localhost. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SECURE` | — | SMTP server for confirmation, reset, and invite emails (port 465 implies TLS). Required when binding beyond localhost. |
 | `MAIL_FROM` | `Outbound <no-reply@localhost>` | Sender for those emails. |
-| `ALLOWED_EMAILS` | empty (nobody) | Pilot allowlist: exact addresses, comma-separated. Removing an address ends that person's sessions. |
-| `OPERATOR_EMAILS` | empty | Addresses allowed to import leads into the pilot pool. |
+| `SUPER_ADMIN_EMAILS` | khushi.sharma.2201@gmail.com, paroksh05@gmail.com, siddharth.m2703@gmail.com | Who gets the **Super admin** portal. Super admins are always approved and are operators. Setting this replaces the default list. |
+| `ALLOWED_EMAILS` | empty | Extra approved addresses set in the deployment (read-only in the portal). Most people are added from the Super admin portal instead. |
+| `OPERATOR_EMAILS` | empty | Extra operators set in the deployment. Operators can also be toggled in the Super admin portal. |
 | `MAILBOX_KEY` | — | 32 random bytes (base64) used to encrypt connected-mailbox credentials. Keep it stable and secret. |
 | `SMTP_ALLOWED_HOSTS` | `smtp.gmail.com,smtp.office365.com` | SMTP hosts a workspace may connect for campaign sending. |
 | `LOCAL_SKIP_EMAIL_VERIFICATION` | `false` | Local development only: skip email confirmation. Ignored in production and on Vercel. |
@@ -83,6 +84,7 @@ During the private pilot, only addresses in `ALLOWED_EMAILS` can use the app, wi
 - **Sign-up** is refused for any other address. An approved sign-up creates a new workspace the person owns, and new users are taken through onboarding: company context, then email setup. They must confirm their email before the first password sign-in; the link expires in 24 hours.
 - **Teammates** are invited from **Team & account**. The invite email links to a page where they create an account or sign in, and they join the inviting workspace as a member or owner. Signing up through an invite skips email confirmation, because the invite link itself proved the address. People who belong to several workspaces can switch from the sidebar.
 - **Google** sign-in is disabled for the pilot. The implementation is kept for a later release.
+- **Super admins** (`SUPER_ADMIN_EMAILS`) see a **Super admin** toggle in the sidebar. The portal approves people (one or many, optionally emailing them an invitation), turns operator access on or off, removes access (signing that person out everywhere, keeping their data), and logs every action. Changes apply immediately, with no redeploy. Super admins can't be added or removed from inside the app.
 - **Forgot password** sends a one-hour, single-use reset link. Completing a reset or changing a password signs out other sessions.
 
 For SMTP you can use any provider: Google Workspace with an app password (`smtp.gmail.com`, port 465), Amazon SES, Postmark, SendGrid, or Mailgun. These settings are only for account emails. Outreach is still sent by you from your own mailbox.

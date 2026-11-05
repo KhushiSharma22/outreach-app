@@ -51,7 +51,7 @@ async function boot() {
   // Restore the screen from the URL so a refresh keeps your place.
   const h = String(location.hash || ''), m = h.match(/^#\/campaign\/([\w-]+)(?:\/(builder|tracking|emails))?/);
   if (!S.fatal && m) openCampaign(m[1], m[2]);
-  else if (!S.fatal && /^#\/(campaigns|outbox|sequences|contacts|account|email|team)$/.test(h)) navigate(h.slice(2));
+  else if (!S.fatal && /^#\/(campaigns|outbox|sequences|contacts|account|email|team|admin)$/.test(h)) navigate(h.slice(2));
   else if (!S.fatal && /^#\/(signin|signup)/.test(h)) setHash('#/');
 }
 function setHash(h) { try { if (location.hash !== h) history.replaceState(null, '', h); } catch { /* no history API (tests) */ } }
@@ -67,6 +67,7 @@ async function navigate(next) {
     if (next === 'email') S.mailbox = await Api.get('/api/mailbox');
     if (next === 'account') S.context = await Api.get('/api/account-context');
     if (next === 'team') S.team = await Api.get('/api/team');
+    if (next === 'admin') await loadAdmin();
   } catch (e) { fail(e); }
   render();
 }
@@ -113,14 +114,15 @@ function shell(body) {
     <button class="${v === 'contacts' ? 'active' : ''}" onclick="navigate('contacts')">${icon('people')}Contacts</button>
     <button class="${v === 'account' ? 'active' : ''}" onclick="navigate('account')">${icon('settings')}Company context</button>
     <button class="${v === 'team' ? 'active' : ''}" onclick="navigate('team')">${icon('shield')}Team & account</button></nav>
+    ${S.session?.user.super_admin ? `<button class="admin-toggle ${v === 'admin' ? 'on' : ''}" role="switch" aria-checked="${v === 'admin'}" onclick="toggleAdmin()"><span class="switch"><i></i></span>Super admin</button>` : ''}
     <div class="sidebar-bottom"><div class="workspace-note"><strong>${icon('spark')} Quality over volume</strong>Every prospect should have a reason to be on your list.</div><div class="user"><span class="avatar">${esc((S.session?.user.name || sender)[0] || 'U')}</span><div class="grow">${esc(S.session?.user.name || sender)}<small>${esc(S.session?.user.email || '')}</small></div><button class="small ghost signout" onclick="signOut()" title="Sign out">Sign out</button></div></div></aside>
-    <main class="main"><header class="topbar"><span class="mobile-brand">↗ outbound.</span><div class="breadcrumbs">Workspace <span>/</span><strong>${({ home: 'Home', campaigns: 'Campaigns', builder: 'Campaign studio', tracking: 'Campaign insights', emails: 'Email studio', account: 'Company context', team: 'Team & account', contacts: 'Contacts', sequences: 'Sequences', outbox: 'Send queue' })[v]}</strong></div>
+    <main class="main"><header class="topbar"><span class="mobile-brand">↗ outbound.</span><div class="breadcrumbs">Workspace <span>/</span><strong>${({ home: 'Home', campaigns: 'Campaigns', builder: 'Campaign studio', tracking: 'Campaign insights', emails: 'Email studio', account: 'Company context', team: 'Team & account', admin: 'Super admin', contacts: 'Contacts', sequences: 'Sequences', outbox: 'Send queue' })[v]}</strong></div>
     <div class="top-actions">${S.summary?.sending_stopped ? badge('Sending stopped', 'red') : ''}<span class="preview-pill" title="AI provider">${icon('spark')} ${esc(aiLabel())}</span><span class="preview-pill" title="Delivery mode">Manual sending</span><button class="small ghost" onclick="navigate('account')">${icon('mail')} ${esc(S.context?.data.email || '')}</button></div></header>
     <div class="content">${body}</div></main></div>${overlay()}`;
 }
 function render() {
   if (S.auth) { $('app').innerHTML = authView(); return; }
-  const views = { home: homeView, campaigns: campaignsView, builder: builderView, tracking: trackingView, emails: emailsView, account: accountView, email: emailSetupView, team: teamView, contacts: contactsView, sequences: sequencesView, outbox: outboxView };
+  const views = { home: homeView, campaigns: campaignsView, builder: builderView, tracking: trackingView, emails: emailsView, account: accountView, email: emailSetupView, team: teamView, admin: adminView, contacts: contactsView, sequences: sequencesView, outbox: outboxView };
   let body;
   if (S.loading) body = loadingPanel('Loading your workspace…');
   else if (S.fatal) body = `<div class="panel empty"><h3>We couldn’t load your workspace</h3><p>${esc(S.fatal)}</p><button class="primary" onclick="location.reload()">Try again</button></div>`;
@@ -864,6 +866,54 @@ async function changePassword() {
   try { await Api.post('/api/auth/change-password', { current_password: $('pw-current')?.value, password: $('pw-new').value }); S.pwErrors = null; S.session = await Api.get('/api/session'); render(); toast('Password saved. Other sessions were signed out.'); }
   catch (e) { if (e.status === 422) { S.pwErrors = e.fields; render(); } else fail(e); }
 }
+// ---------- Super admin: pilot access ----------
+function toggleAdmin() { navigate(S.view === 'admin' ? 'home' : 'admin'); }
+async function loadAdmin() { const [p, l] = await Promise.all([Api.get('/api/admin/people'), Api.get('/api/admin/log')]); S.admin = p; S.adminLog = l.items; }
+function adminView() {
+  if (!S.session?.user.super_admin) return `<div class="panel empty"><h3>Super admins only</h3></div>`;
+  const A = S.admin;
+  const tag = p => [p.super_admin && badge('Super admin', 'green'), p.env_allowed && badge('Deployment setting'), p.added && badge('Added in portal'), !p.approved && badge('No access', 'red'), p.operator && badge('Operator', 'green')].filter(Boolean).join(' ');
+  const acct = p => !p.account ? '<small class="subtle">Not signed up yet</small>' : `<strong>${esc(p.account.name)}</strong><small>${p.account.verified ? '' : 'Email not confirmed · '}${p.account.last_login_at ? 'Last active ' + fmtDate(p.account.last_login_at) : 'Never signed in'}${p.account.workspaces ? ' · ' + esc(p.account.workspaces) : ''}</small>`;
+  const actions = p => p.super_admin ? '<small class="subtle">Set in deployment</small>'
+    : p.editable ? `<label class="inline" style="margin:0"><input type="checkbox" ${p.operator ? 'checked' : ''} onchange="adminOperator('${esc(p.email)}',this.checked)"> Operator</label><button class="small ghost" onclick="adminRemove('${esc(p.email)}')">Remove access</button>`
+    : p.approved ? '<small class="subtle">Managed in deployment settings</small>'
+    : `<button class="small" onclick="adminAdd(['${esc(p.email)}'],false,false)">Restore access</button>`;
+  return `<div class="heading"><div><div class="eyebrow">SUPER ADMIN</div><h1>Pilot access</h1><p>Approve who can use Outbound and who can import leads. Changes apply immediately.</p></div>${badge('Super admin', 'green')}</div>
+  <div class="wizard-grid"><div class="stack">
+  <section class="panel"><div class="panel-header"><div><h2>Add people</h2><p>One or many emails, separated by commas, spaces, or new lines.</p></div>${icon('people')}</div>
+    <div class="field"><label for="admin-emails">Email addresses</label><textarea id="admin-emails" placeholder="name@company.com, other@company.com"></textarea></div>
+    <div class="field"><label for="admin-note">Note (optional)</label><input id="admin-note" placeholder="e.g. Design partner, Acme"></div>
+    <label class="inline"><input id="admin-operator" type="checkbox"> Operator: can import leads into the pilot pool</label>
+    <label class="inline" style="margin-top:8px"><input id="admin-notify" type="checkbox" checked> Email them an invitation to sign up</label>
+    <div style="margin-top:14px"><button class="primary" onclick="adminAddFromForm()" ${S.adminBusy ? 'disabled' : ''}>${S.adminBusy ? 'Adding…' : 'Approve'}</button></div></section>
+  <section class="panel"><div class="panel-header"><div><h2>People</h2><p>${A ? (n => `${n} approved ${n === 1 ? 'person' : 'people'}`)(A.people.filter(p => p.approved).length) : ''}</p></div></div>
+  ${!A ? loadingPanel() : `<div class="table-wrap"><table class="admin-table"><thead><tr><th>Email</th><th>Account</th><th>Access</th><th></th></tr></thead><tbody>${A.people.map(p => `<tr><td>${esc(p.email)}${p.added?.note ? `<small>${esc(p.added.note)}</small>` : ''}</td><td>${acct(p)}</td><td>${tag(p)}</td><td><div class="inline">${actions(p)}</div></td></tr>`).join('')}</tbody></table></div>`}</section></div>
+  <aside class="wizard-aside stack"><section class="panel"><h2 style="font-size:14px">How access works</h2><p class="subtle">Approved people can create an account with that exact email and get their own workspace. Removing access signs them out everywhere; their workspace data is kept.</p><p class="subtle">Super admins are set in the deployment configuration and can't be changed here.</p></section>
+  <section class="panel"><h2 style="font-size:14px">Recent admin activity</h2>${(S.adminLog || []).map(e => `<div class="summary-row"><small>${fmtDate(e.created_at)} · ${esc(e.actor || '')}</small><p>${esc(e.summary)}</p></div>`).join('') || '<p class="helper">No admin activity yet.</p>'}</section></aside></div>`;
+}
+async function adminAdd(emails, operator, notify, note = '') {
+  S.adminBusy = true; render();
+  try {
+    const r = await Api.post('/api/admin/people', { emails, operator, notify, note });
+    S.admin = r; S.adminLog = (await Api.get('/api/admin/log')).items;
+    const failed = r.results.filter(x => x.notify_error);
+    toast(`${r.results.length} ${r.results.length === 1 ? 'person' : 'people'} approved.${failed.length ? ` Invitation email failed for ${failed.map(x => x.email).join(', ')}.` : ''}`);
+    return true;
+  } catch (e) { fail(e); return false; }
+  finally { S.adminBusy = false; render(); }
+}
+async function adminAddFromForm() {
+  const emails = $('admin-emails').value, ok = await adminAdd(emails, $('admin-operator').checked, $('admin-notify').checked, $('admin-note').value);
+  if (ok && $('admin-emails')) $('admin-emails').value = '';
+}
+async function adminOperator(email, operator) {
+  try { S.admin = await Api.patch(`/api/admin/people/${encodeURIComponent(email)}`, { operator }); S.adminLog = (await Api.get('/api/admin/log')).items; render(); toast(operator ? `${email} can import leads.` : `${email} can no longer import leads.`); } catch (e) { fail(e); }
+}
+async function adminRemove(email) {
+  if (!confirm(`Remove ${email} from the pilot? They'll be signed out everywhere and can't sign in again until re-approved. Their workspace data is kept.`)) return;
+  try { S.admin = await Api.del(`/api/admin/people/${encodeURIComponent(email)}`); S.adminLog = (await Api.get('/api/admin/log')).items; render(); toast(`${email} removed.`); } catch (e) { fail(e); }
+}
+
 async function signOutEverywhere() { try { await Api.post('/api/auth/logout-all'); } catch { /* ignore */ } S.auth = null; await showAuth('signin', { error: '' }); }
 
 render();

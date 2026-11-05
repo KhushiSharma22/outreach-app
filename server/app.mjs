@@ -17,7 +17,8 @@ import * as delivery from './delivery.mjs';
 import * as reporting from './reporting.mjs';
 import { createJobs, registerHandlers, runScheduler } from './jobs.mjs';
 import { sampleCsv } from './sample.mjs';
-import { createAuth, sessionFromToken, SESSION_COOKIE, emailAllowed } from './auth.mjs';
+import { createAuth, sessionFromToken, SESSION_COOKIE } from './auth.mjs';
+import * as admin from './admin.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STATIC = join(ROOT, 'dist');
@@ -66,7 +67,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
     const bearer = (req.headers.authorization || '').match(/^Bearer (.+)$/)?.[1];
     if (bearer) {
       const user = await db.get('SELECT u.*, m.role member_role FROM users u JOIN memberships m ON m.user_id=u.id AND m.workspace_id=u.workspace_id WHERE u.token_hash=?', [hash(bearer)]);
-      return user && (authMode === 'dev' || emailAllowed(user.email)) ? { user: { ...user, role: user.member_role }, ws: user.workspace_id, viaCookie: false } : null;
+      return user && (authMode === 'dev' || await admin.isApproved(db, user.email)) ? { user: { ...user, role: user.member_role }, ws: user.workspace_id, viaCookie: false } : null;
     }
     const raw = (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith(SESSION_COOKIE + '='))?.slice(SESSION_COOKIE.length + 1);
     let token = null; try { token = raw && decodeURIComponent(raw); } catch { /* malformed cookie */ }
@@ -95,6 +96,13 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
   route('POST', '/api/team/invites', async (ctx, p, body) => await auth.invite(ctx, body), { status: 201 });
   route('DELETE', '/api/team/invites/:id', async (ctx, p) => await auth.revokeInvite(ctx, p.id));
   route('DELETE', '/api/team/members/:id', async (ctx, p) => await auth.removeMember(ctx, p.id));
+
+  // ---------- Super-admin portal: pilot access ----------
+  route('GET', '/api/admin/people', ctx => admin.listPeople(ctx));
+  route('POST', '/api/admin/people', (ctx, p, body) => admin.addPeople(ctx, body, publicUrl), { status: 201 });
+  route('PATCH', '/api/admin/people/:email', (ctx, p, body) => admin.updatePerson(ctx, p.email, body));
+  route('DELETE', '/api/admin/people/:email', (ctx, p) => admin.removePerson(ctx, p.email));
+  route('GET', '/api/admin/log', ctx => admin.adminLog(ctx));
 
   route('GET', '/api/session', async (ctx, p, b, q, x) => {
     const pr = await getProvider();
@@ -152,7 +160,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
   route('GET', '/api/mailbox', ctx => mailbox.status(ctx));
   route('POST', '/api/mailbox', (ctx,p,body) => {if((process.env.NODE_ENV==='production'||process.env.VERCEL)&&!publicUrl.startsWith('https://')) throw new AppError(503,'https_required','Configure HTTPS before connecting a mailbox.'); return mailbox.connect(ctx,body);});
   route('GET', '/api/imports', async ctx => ({ items: await reporting.listImports(ctx) }));
-  route('POST', '/api/imports', async (ctx, p, body) => { if (!(process.env.OPERATOR_EMAILS || '').split(',').map(x=>x.trim().toLowerCase()).includes(ctx.user.email.toLowerCase())) throw new AppError(403,'operator_only','Lead imports are managed by the pilot team.'); return sourcing.importCsv(ctx, body); }, { status: 201, idem: true });
+  route('POST', '/api/imports', async (ctx, p, body) => { if (!await admin.isOperator(db, ctx.user.email)) throw new AppError(403,'operator_only','Lead imports are managed by the pilot team.'); return sourcing.importCsv(ctx, body); }, { status: 201, idem: true });
   route('GET', '/api/suppressions', async ctx => ({ items: await reporting.listSuppressions(ctx) }));
   route('POST', '/api/suppressions', async (ctx, p, body) => await delivery.addSuppression(ctx, { email: body.email, reason: 'manual', note: body.note }), { status: 201 });
   route('DELETE', '/api/suppressions/:id', async (ctx, p) => await delivery.removeSuppression(ctx, p.id));

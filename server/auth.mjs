@@ -5,6 +5,7 @@ import { id, now, hash } from './db.mjs';
 import { AppError, invalid, conflict, notFound, EMAIL_RE, normEmail, json } from './lib.mjs';
 import { DEFAULT_CONTEXT } from './campaigns.mjs';
 import { sendMail } from './mailer.mjs';
+import { isApproved, requireApproved, isSuperAdmin, isOperator } from './admin.mjs';
 
 const DAY = 864e5;
 const SESSION_TTL = 30 * DAY;
@@ -78,7 +79,7 @@ async function consumeToken(db, kind, token, message) {
 const userByEmail = async (db, email) => await db.get('SELECT * FROM users WHERE lower(email)=lower(?)', [email]);
 // Creates a user. With an invite they join that workspace; otherwise they get their own.
 async function createUser(db, { name, email, password_hash = null, verified = false, google_sub = null, company, invite = null }) {
-  requireAllowed(email);
+  await requireApproved(db, email);
   return await db.tx(async () => {
     const userId = id(), t = now();
     const wsId = invite ? invite.workspace_id : null;
@@ -102,7 +103,7 @@ async function createUser(db, { name, email, password_hash = null, verified = fa
   });
 }
 export async function createSession(db, user, { workspaceId, method, userAgent }) {
-  requireAllowed(user.email);
+  await requireApproved(db, user.email);
   const ws = workspaceId && await db.get('SELECT workspace_id FROM memberships WHERE user_id=? AND workspace_id=?', [user.id, workspaceId])
     || await db.get('SELECT workspace_id FROM memberships WHERE user_id=? ORDER BY CASE WHEN workspace_id=? THEN 0 ELSE 1 END, created_at LIMIT 1', [user.id, user.workspace_id]);
   if (!ws) throw new AppError(403, 'no_workspace', 'This account is not a member of any workspace.');
@@ -118,7 +119,7 @@ export async function sessionFromToken(db, token) {
   if (!s || Date.parse(s.expires_at) < Date.now()) return null;
   if(s.method==='local_password' && (process.env.LOCAL_SKIP_EMAIL_VERIFICATION!=='true'||process.env.NODE_ENV==='production'||process.env.VERCEL)) return null;
   const user = await db.get('SELECT u.*, m.role member_role FROM users u JOIN memberships m ON m.user_id=u.id AND m.workspace_id=? WHERE u.id=?', [s.workspace_id, s.user_id]);
-  if (!user || !emailAllowed(user.email)) return null;
+  if (!user || !(await isApproved(db, user.email))) return null;
   if (Date.now() - Date.parse(s.last_seen_at) > 3600e3) await db.run('UPDATE sessions SET last_seen_at=?, expires_at=? WHERE id=?', [now(), new Date(Date.now() + SESSION_TTL).toISOString(), s.id]);
   return { user: { ...user, role: user.member_role }, session: s };
 }
@@ -148,7 +149,7 @@ export function createAuth({ db, publicUrl }) {
     async signup(out, req, body) {
       const name = String(body.name || '').trim(), email = normEmail(body.email), company = String(body.company || '').trim();
       await limit(db, 'signup:' + clientIp(req), 20, 3600e3);
-      requireAllowed(email);
+      await requireApproved(db, email);
       const fields = {};
       if (!name) fields.name = 'Enter your name.';
       if (!email || !EMAIL_RE.test(email)) fields.email = 'Enter a valid email address.';
@@ -186,7 +187,7 @@ export function createAuth({ db, publicUrl }) {
       if (email) await limit(db, 'login:' + email, 10, 900e3);
       const user = email && await userByEmail(db, email);
       const ok = await verifyPassword(String(body.password ?? ''), user?.password_hash);
-      if (!user || !ok || !emailAllowed(email)) throw new AppError(401, 'invalid_credentials', 'Email or password is incorrect.');
+      if (!user || !ok || !(await isApproved(db, email))) throw new AppError(401, 'invalid_credentials', 'Email or password is incorrect.');
       if (!user.email_verified_at && localVerificationSkip(req)) return signIn(out,user,'local_password',req);
       if (!user.email_verified_at) throw new AppError(403, 'email_unverified', 'Confirm your email address first. Check your inbox for the link, or send a new one.');
       return await signIn(out, user, 'password', req);
@@ -264,7 +265,7 @@ export function createAuth({ db, publicUrl }) {
     async session(ctx, auth) {
       const workspaces = await db.all('SELECT w.id, w.name, m.role FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=? ORDER BY w.name', [ctx.user.id]);
       const u = await db.get('SELECT * FROM users WHERE id=?', [ctx.user.id]);
-      return { user: { id: u.id, name: u.name, email: u.email, role: ctx.user.role, has_password: !!u.password_hash, google_linked: !!u.google_sub, email_verified: !!u.email_verified_at }, workspaces, method: auth?.session?.method || 'token' };
+      return { user: { id: u.id, name: u.name, email: u.email, role: ctx.user.role, super_admin: isSuperAdmin(u.email), operator: await isOperator(db, u.email), has_password: !!u.password_hash, google_linked: !!u.google_sub, email_verified: !!u.email_verified_at }, workspaces, method: auth?.session?.method || 'token' };
     },
     async switchWorkspace(ctx, auth, body) {
       const m = await db.get('SELECT 1 FROM memberships WHERE user_id=? AND workspace_id=?', [ctx.user.id, body.workspace_id]);

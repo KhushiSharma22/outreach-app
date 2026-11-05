@@ -129,7 +129,7 @@ The code for Vercel is in place. On Vercel the app runs like this:
    | `DATABASE_URL` | the port-6543 URL from step 1 |
    | `DATABASE_CA_CERT_PEM` | the full text of the Supabase certificate file, from `-----BEGIN CERTIFICATE-----` to `-----END CERTIFICATE-----` |
    | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | as in section 2 |
-   | `ALLOWED_EMAILS` | the approved pilot addresses, comma-separated (empty means nobody can sign in) |
+   | `ALLOWED_EMAILS` | optional: approved addresses set in the deployment. Super admins add people in the app instead. |
    | `OPERATOR_EMAILS` | the addresses allowed to import leads |
    | `MAILBOX_KEY` | 32 random bytes, base64 (`openssl rand -base64 32`); keep it stable, or saved mailbox connections stop working |
    | `GEMINI_API_KEY` | your Gemini key (optional; enables AI drafting and qualification) |

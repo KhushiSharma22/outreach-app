@@ -61,6 +61,7 @@ CREATE INDEX IF NOT EXISTS audit_campaign ON audit_events(campaign_id, seq);
 
 CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, campaign_id TEXT, type TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', run_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, last_error TEXT, dedupe_key TEXT UNIQUE, locked_at TEXT, created_at TEXT NOT NULL, finished_at TEXT);
 CREATE TABLE IF NOT EXISTS idempotency_keys(workspace_id TEXT NOT NULL, key TEXT NOT NULL, route TEXT NOT NULL, status INTEGER NOT NULL, response TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(workspace_id, key));
+CREATE TABLE IF NOT EXISTS allowed_emails(email TEXT PRIMARY KEY, operator INTEGER NOT NULL DEFAULT 0, note TEXT, added_by TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS rate_limit_hits(key TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS rate_limit_key ON rate_limit_hits(key, at);
 CREATE TABLE IF NOT EXISTS ai_calls(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, operation TEXT NOT NULL, provider TEXT NOT NULL, model TEXT, prompt_version TEXT NOT NULL, status TEXT NOT NULL, latency_ms INTEGER NOT NULL, input_tokens INTEGER, output_tokens INTEGER, error TEXT, created_at TEXT NOT NULL);
