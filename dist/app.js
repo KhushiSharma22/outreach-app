@@ -233,7 +233,6 @@ async function continueFlow() {
   const f = c.config.filters;
   if (c.step === 0 && (!c.name.trim() || !c.config.offer.trim())) S.error = 'Complete the campaign name and offering.';
   else if (c.step === 0 && !f.roles.length && !f.industries.length) S.error = 'Choose at least one job role or industry.';
-  else if (c.step === 1 && !c.config.signals.length) S.error = 'Select at least one signal.';
   else if (c.step === 2 && !S.leads?.selected) S.error = 'Discover and select qualified leads first.';
   else if (c.step === 3 && (!S.drafts?.total || S.drafts.approved < S.drafts.total)) S.error = 'Approve the emails individually or review and approve all.';
   else if (c.step === 4 && (!c.config.schedule.days.length || !c.config.schedule.time)) S.error = 'Choose at least one day and a time.';
@@ -275,7 +274,7 @@ function discoveryView(c) {
   ${cfg.source === 'salesnav' ? `<div class="spacer"></div>${field('Saved search or list reference (optional)', 'sourceRef', cfg.sourceRef)}<div class="notice">${icon('shield')}This reference is kept for your records. The app never logs in to LinkedIn or scrapes profiles.</div>` : ''}
   <div class="toolbar" style="margin-top:16px"><span class="subtle">${contacts ? `${plural(contacts, 'contact')} available to check.` : 'No contacts yet — import a CSV to discover leads.'}</span><button class="small" onclick="navigate('contacts')">${icon('download')} Import contacts</button></div>
   <div class="source-flow"><span>Import prospects</span>${icon('arrow')}<span>Check filters & email</span>${icon('arrow')}<span>Assess fit with evidence</span>${icon('arrow')}<span>Your review</span></div></section>
-  <section class="panel"><div class="panel-header"><div><h2>Reach out for a reason</h2><p>Prospects must match the audience and at least one recent signal.</p></div></div><div class="signals">${S.session.catalog.signals.map(s => `<button class="${cfg.signals.includes(s) ? 'selected' : ''}" onclick="toggleSignal('${s}')">${cfg.signals.includes(s) ? '✓' : '+'} ${s}</button>`).join('')}</div>
+  <section class="panel"><div class="panel-header"><div><h2>Reach out for a reason</h2><p>Optional: select events to require a recent signal, or leave all unselected to assess audience fit.</p></div></div><div class="signals">${S.session.catalog.signals.map(s => `<button class="${cfg.signals.includes(s) ? 'selected' : ''}" onclick="toggleSignal('${s}')">${cfg.signals.includes(s) ? '✓' : '+'} ${s}</button>`).join('')}</div>
   <div class="two-col" style="margin-top:24px"><div class="field"><label for="freshness">Signal recency</label><select id="freshness" onchange="saveCampaign({config:{freshness:+this.value}})">${[7, 30, 90].map(n => `<option value="${n}" ${cfg.freshness === n ? 'selected' : ''}>Last ${n} days</option>`).join('')}</select></div><div class="field"><label for="target">Daily lead target</label><input id="target" type="number" min="25" max="30" value="${cfg.target}" onchange="this.value=Math.min(30,Math.max(25,+this.value||25));saveCampaign({config:{target:+this.value}})"><p class="helper">Minimum goal 25 · maximum 30 per day.</p></div></div>
   <label for="quality">Minimum fit score <strong id="quality-value">${cfg.quality}/100</strong></label><input id="quality" type="range" min="70" max="95" step="5" value="${cfg.quality}" oninput="$('quality-value').textContent=this.value+'/100';saveCampaign({config:{quality:+this.value}})">
   <label class="inline" style="margin-top:16px"><input type="checkbox" ${cfg.requireVerifiedEmail ? 'checked' : ''} onchange="saveCampaign({config:{requireVerifiedEmail:this.checked}})"> Require a verified email (unverified addresses go to review)</label>
@@ -939,9 +938,19 @@ function smtpPreset(provider){if(provider==='gmail'){$('smtp-host').value='smtp.
 async function connectSmtp(){
  if(S.smtpBusy)return;
  const body=Object.fromEntries(['host','port','user','password','sender','postal_address'].map(k=>[k,$('smtp-'+k).value]));
+ const provider=$('smtp-provider').value; let errorMessage='';
  S.smtpBusy=true; $('smtp-password').value='';
  try{S.mailbox=await Api.post('/api/mailbox',body);toast('Connection saved. Check your inbox for the test email.');}
- catch(e){toast(e.message||'Connection failed.');}
- finally{body.password='';S.smtpBusy=false;render();}
+ catch(e){errorMessage=e.message||'Connection failed.';}
+ finally{
+ body.password='';S.smtpBusy=false;render();
+ if(errorMessage && S.view==='email'){
+ for(const key of ['host','port','user','sender','postal_address']) if($('smtp-'+key)) $('smtp-'+key).value=body[key];
+ if($('smtp-provider')) $('smtp-provider').value=provider;
+ const notice=document.createElement('p');notice.className='notice';notice.setAttribute('role','alert');notice.textContent=errorMessage+' Re-enter your app password to retry.';
+ $('smtp-password')?.closest('.field')?.after(notice);
+ }
+ if(errorMessage)toast(errorMessage);
+ }
 }
 async function disconnectSmtp(){if(!confirm('Disconnect this mailbox? Future SMTP sends will be blocked.'))return;try{await Api.del('/api/mailbox');S.mailbox={sender:null};render();toast('Mailbox disconnected. Revoke its app password with your provider if no longer needed.');}catch(e){fail(e);}}

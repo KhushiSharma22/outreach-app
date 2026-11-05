@@ -13,7 +13,6 @@ export async function blockers(ctx, c) {
   const out = [], cfg = c.config;
   if (!c.name.trim() || !cfg.offer.trim()) out.push({ code: 'brief', message: 'Complete your campaign brief.' });
   if (!cfg.filters.roles.length && !cfg.filters.industries.length) out.push({ code: 'audience', message: 'Choose at least one job role or industry.' });
-  if (!cfg.signals.length) out.push({ code: 'signals', message: 'Choose at least one discovery signal.' });
   const sel = await ctx.db.all(`SELECT l.id, ct.email, s.reason suppressed, d.current_revision_id FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id
     LEFT JOIN suppressions s ON s.workspace_id=ct.workspace_id AND s.email=ct.email LEFT JOIN drafts d ON d.lead_id=l.id
     WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified'`, [c.id]);

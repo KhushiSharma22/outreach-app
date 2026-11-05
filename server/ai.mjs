@@ -37,7 +37,7 @@ const offline = {
     if (!filters.roles.length) clarifications.push('No job role was recognized. Choose the roles you want to reach.');
     if (!filters.industries.length) clarifications.push('No industry was recognized; any industry will match unless you choose one.');
     if (!filters.locations.length) clarifications.push('No location was recognized; any location will match unless you choose one.');
-    if (!signals.length) clarifications.push('No buying signal was recognized. Choose at least one signal before discovery.');
+    if (!signals.length) clarifications.push('No buying signal was recognized. Discovery can use audience fit, or you can add an optional event trigger.');
     const who = filters.roles.slice(0, 2).join(' & ') || 'Prospects', where = filters.locations[0] ? ' · ' + filters.locations[0] : '';
     return { name: `${who}${filters.industries[0] ? ' at ' + filters.industries[0] : ''}${where}`.slice(0, 80), filters, signals, notes: '', clarifications, summary: 'Keyword interpretation (no AI provider configured). Confirm every filter before discovery.' };
   },

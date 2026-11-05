@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {encrypt,decrypt,connect,status} from '../server/mailbox.mjs';
+import {encrypt,decrypt,connect,status,connectionFailure} from '../server/mailbox.mjs';
 import {openDb} from '../server/db.mjs';
 import {seedWorkspace} from '../server/app.mjs';
 test('authenticated encryption rejects swapped tenants, tampering and changed keys',()=>{
@@ -26,4 +26,13 @@ test('SMTP setup protects secrets, verifies sender, and preserves previous conne
  assert.equal((await db.get('SELECT credentials FROM mailboxes WHERE workspace_id=?',[ctx.ws])).credentials,row.credentials);
  assert.equal((await status({...ctx,ws:'different-tenant'})).sender,null);
  }finally{await db.close();}
+});
+
+test('SMTP errors explain the failed stage without exposing provider responses',()=>{
+ for(const [code,expected] of [['EAUTH',/login was rejected/],['ETIMEDOUT',/Could not reach/],['ETLS',/secure SMTP/]]) {
+ const e=connectionFailure({code,message:'secret-password',response:'private-provider-response'},'verify');
+ assert.match(e.message,expected);assert.ok(!e.message.includes('secret-password'));assert.ok(!e.message.includes('private-provider-response'));
+ }
+ assert.match(connectionFailure({},'send').message,/login succeeded/);
+ assert.match(connectionFailure({},'verify').message,/verification failed/);
 });

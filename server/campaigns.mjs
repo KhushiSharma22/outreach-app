@@ -115,7 +115,7 @@ export async function createCampaign(ctx, { name, prompt = '', brief } = {}) {
   if (!context) throw new AppError(409, 'missing_context', 'Save your company context first.');
   let config = defaultConfig(context.data);
   // An interpreted brief is applied only as the user confirmed it; the original prompt is kept verbatim.
-  if (brief) config = normalizeConfig(config, { filters: brief.filters, signals: brief.signals?.length ? brief.signals : config.signals, notes: brief.notes });
+  if (brief) config = normalizeConfig(config, { filters: brief.filters, signals: Array.isArray(brief.signals) ? brief.signals : config.signals, notes: brief.notes });
   const t = now(), c = { id: id(), workspace_id: ctx.ws, name: String(name || brief?.name || 'Untitled campaign').trim().slice(0, 120) || 'Untitled campaign', prompt: String(prompt).slice(0, 4000), status: 'draft', step: 0, context_version_id: context.id, config_version: 1, revision: 1, launched_at: null, created_at: t, updated_at: t };
   await ctx.db.tx(async () => {
     await ctx.db.insert('campaigns', c);

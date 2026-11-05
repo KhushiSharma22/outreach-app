@@ -17,6 +17,17 @@ export async function transport(ctx) {
  const {default:nodemailer}=await import('nodemailer');
  return {row:r, client:nodemailer.createTransport({...c, secure:c.port===465, requireTLS:true, tls:{rejectUnauthorized:true}, connectionTimeout:10000, socketTimeout:20000, disableFileAccess:true, disableUrlAccess:true})};
 }
+// Classify provider failures without returning raw responses, credentials or addresses.
+export function connectionFailure(error, stage) {
+ const code=error?.code;
+ let message;
+ if(code==='EAUTH') message='SMTP login was rejected. Check the full mailbox username and use a provider-issued app password. For Gmail, check that app passwords are enabled for this Google account.';
+ else if(['ETIMEDOUT','ECONNECTION','ESOCKET','ECONNREFUSED','EDNS','ENOTFOUND','EAI_AGAIN'].includes(code)) message='Could not reach the SMTP server. Check the hostname, port and your network or firewall, then retry.';
+ else if(['ETLS','CERT_HAS_EXPIRED','DEPTH_ZERO_SELF_SIGNED_CERT','UNABLE_TO_VERIFY_LEAF_SIGNATURE','ERR_TLS_CERT_ALTNAME_INVALID'].includes(code)) message='The secure SMTP connection could not be verified. Check the provider hostname and certificate configuration.';
+ else if(stage==='send') message='SMTP login succeeded, but the test email was not confirmed as accepted. Check sender permission and provider sending limits; check your inbox before retrying.';
+ else message='SMTP verification failed. Check provider settings, app password and whether SMTP access is enabled.';
+ return invalid(message+' Your previous connection has not been changed.');
+}
 export async function connect(ctx,body, createTransport) {
  if(ctx.user?.role!=='owner') throw new AppError(403,'owner_only','Only a workspace owner can configure email.');
  await ctx.db.tx(async()=>{
@@ -29,7 +40,9 @@ export async function connect(ctx,body, createTransport) {
  const host=String(body.host||'').trim().toLowerCase(), port=Number(body.port), sender=String(body.sender||'').trim().toLowerCase();
  // Operator-approved hosts prevent arbitrary internal-network access through SMTP setup.
  const hosts=(process.env.SMTP_ALLOWED_HOSTS||'').split(',').map(s=>s.trim().toLowerCase());
- if(!hosts.includes(host)||![465,587].includes(port)) throw invalid('Choose an operator-approved SMTP host and port 465 or 587.');
+ if(![465,587].includes(port)) throw invalid('SMTP port must be 465 (TLS) or 587 (STARTTLS). Enter only the number.');
+ if(!hosts.filter(Boolean).length) throw invalid('No SMTP providers are configured on this server. Set SMTP_ALLOWED_HOSTS in this installation’s .env and restart the backend.');
+ if(!hosts.includes(host)) throw invalid('SMTP host is not approved on this server. Approved hosts: '+hosts.filter(Boolean).join(', ')+'. Enter the hostname only, without https:// or a port. Ask the operator to approve a different provider.');
  if(!EMAIL_RE.test(sender)||!body.user||!body.password||!String(body.postal_address||'').trim()) throw invalid('Sender, username, app password and business postal address are required.');
  if(String(body.password).length>1024||String(body.user).length>320||/[\r\n]/.test(sender)) throw invalid('Invalid SMTP credentials.');
  const context=await ctx.db.get('SELECT data FROM account_context_versions WHERE workspace_id=? ORDER BY version DESC LIMIT 1',[ctx.ws]);
@@ -39,7 +52,8 @@ export async function connect(ctx,body, createTransport) {
  const credentials=encrypt({host,port,auth:{user:String(body.user),pass:String(body.password)}},ctx.ws);
  const factory=createTransport || (await import('nodemailer')).default.createTransport;
  const client=factory({host,port,secure:port===465,requireTLS:true,auth:{user:String(body.user),pass:String(body.password)},connectionTimeout:10000,socketTimeout:20000,tls:{rejectUnauthorized:true}});
- try {await client.verify(); await client.sendMail({from:sender,to:sender,subject:'Outbound mailbox connection test',text:'Your SMTP settings were verified. This test checks sending from your configured address. No campaign has been launched.',disableFileAccess:true,disableUrlAccess:true});} catch {throw invalid('Connection or test email failed. Check provider settings and sender permission. Your previous connection has not been changed.');} finally {client.close();}
+ let stage='verify';
+ try {await client.verify(); stage='send'; await client.sendMail({from:sender,to:sender,subject:'Outbound mailbox connection test',text:'Your SMTP settings were verified. This test checks sending from your configured address. No campaign has been launched.',disableFileAccess:true,disableUrlAccess:true});} catch (error) {throw connectionFailure(error,stage);} finally {client.close();}
  await ctx.db.run('INSERT INTO mailboxes(workspace_id, sender, postal_address, credentials, updated_at) VALUES(?,?,?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET sender=excluded.sender, postal_address=excluded.postal_address, credentials=excluded.credentials, updated_at=excluded.updated_at',[ctx.ws,sender,String(body.postal_address).trim().slice(0,500),credentials,now()]);
  await ctx.db.audit(ctx.ws,null,'mailbox.connected','SMTP connection tested and saved',{},ctx.user.id);
  return status(ctx);

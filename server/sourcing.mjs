@@ -155,7 +155,8 @@ export function checkCandidate(ctx, config, context, cand, evidence, today) {
   const dated = relevant.filter(e => e.event_date).map(e => ({ e, age: Math.round((Date.parse(today) - Date.parse(e.event_date)) / 864e5) }));
   const fresh = dated.filter(x => x.age >= -1 && x.age <= config.freshness).sort((a, b) => a.age - b.age)[0];
   let signalScore = 0;
-  if (fresh) { signalScore = 25 * (1 - 0.5 * Math.max(0, fresh.age) / config.freshness); add('signal', 'Signal', 'pass', `${fresh.e.signal}, ${fresh.age <= 0 ? 'today' : fresh.age + ' days ago'}`, 25); }
+  if (!config.signals.length) add('signal', 'Signal', 'pass', 'No event trigger required; campaign uses audience fit.', 0);
+  else if (fresh) { signalScore = 25 * (1 - 0.5 * Math.max(0, fresh.age) / config.freshness); add('signal', 'Signal', 'pass', `${fresh.e.signal}, ${fresh.age <= 0 ? 'today' : fresh.age + ' days ago'}`, 25); }
   else if (relevant.some(e => !e.event_date)) add('signal', 'Signal', 'unknown', 'Signal found but its event date is unknown, so it cannot count as recent.', 25);
   else if (dated.length) add('signal', 'Signal', 'fail', `Latest ${config.signals.join('/')} signal is older than ${config.freshness} days.`, 25);
   else add('signal', 'Signal', 'fail', `No ${config.signals.join(' or ')} evidence.`, 25);
@@ -166,7 +167,7 @@ export function checkCandidate(ctx, config, context, cand, evidence, today) {
   const score = Math.round(100 * earned / possible);
   const fail = checks.find(c => c.status === 'fail'), unknown = checks.filter(c => c.status === 'unknown');
   const decision = fail ? 'excluded' : unknown.length ? 'review' : score < config.quality ? 'review' : 'qualified';
-  const rationale = fail ? fail.detail : unknown.length ? unknown.map(c => c.detail).join(' ') : score < config.quality ? `Fit score ${score} is below your ${config.quality} threshold.` : 'Role, company profile, and a recent signal match the campaign brief.';
+  const rationale = fail ? fail.detail : unknown.length ? unknown.map(c => c.detail).join(' ') : score < config.quality ? `Fit score ${score} is below your ${config.quality} threshold.` : (config.signals.length ? 'Role, company profile, and a recent signal match the campaign brief.' : 'Audience filters match; no event trigger is required. Buying intent still needs review.');
   return { decision, score, rationale, checks: checks.map(({ weight, ...c }) => c), missing: unknown.map(c => c.label), evidence_ids: (fresh ? [fresh.e] : relevant).slice(0, 3).map(e => e.id), confidence: unknown.length ? 'low' : 'high' };
 }
 const exclusionList = text => (text || '').toLowerCase().split(/[,;\n]/).map(s => normDomain(s.trim()) || '').filter(s => s.includes('.') || s.split(' ').length === 1).filter(Boolean);
@@ -175,7 +176,6 @@ const exclusionList = text => (text || '').toLowerCase().split(/[,;\n]/).map(s =
 export async function startDiscovery(ctx, campaignId, { trigger = 'manual', occurrenceDate = null } = {}) {
   const c = await loadCampaign(ctx, campaignId);
   if (c.status === 'stopped') throw conflict('campaign_stopped', 'This campaign is stopped.');
-  if (!c.config.signals.length) throw invalid('Select at least one signal before discovery.', { signals: 'Required.' });
   if (!c.config.filters.roles.length && !c.config.filters.industries.length) throw invalid('Choose at least one job role or industry so discovery has an audience.', { filters: 'Required.' });
   const running = await ctx.db.get("SELECT id FROM discovery_runs WHERE campaign_id=? AND status IN ('queued','running')", [c.id]);
   if (running) {
