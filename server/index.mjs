@@ -20,7 +20,7 @@ app.server.listen(port, host, async () => {
   console.log(`Outbound campaign studio running at http://${host}:${port}`);
   console.log(`Database: ${app.db.dialect === 'postgres' ? `PostgreSQL (${new URL(process.env.DATABASE_URL).host})` : `SQLite (${process.env.DB_FILE || 'data/outreach.db'})`}`);
   console.log(`AI provider: ${p.name}${p.model ? ` (${p.model})` : ' — set GEMINI_API_KEY (or ANTHROPIC_API_KEY) and run npm install to enable AI'}`);
-  console.log('Delivery mode: manual send tasks (no outreach email is sent by this server).');
+  console.log('Delivery: manual or scheduled SMTP, as configured per campaign. Only approved messages may send.');
   console.log(`Sign-in: email + password${googleEnabled() ? ' and Google' : ' (set GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET to add Google)'}; account emails ${mailConfigured() ? 'sent via SMTP' : 'printed to this console (set SMTP_HOST to send them)'}. Links use ${app.publicUrl}.`);
 });
 const shutdown = () => { app.close(); process.exit(0); };

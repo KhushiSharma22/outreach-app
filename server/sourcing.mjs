@@ -4,7 +4,7 @@ import { id, now, hash } from './db.mjs';
 import { AppError, notFound, invalid, conflict, json, parseCsv, EMAIL_RE, normEmail, normDomain, normLinkedin, localView } from './lib.mjs';
 import { CATALOG, sizeBuckets } from './ai.mjs';
 import { loadCampaign } from './campaigns.mjs';
-import { startCampaignDiscovery } from './lead-pools.mjs';
+import { startCampaignDiscovery, assessPrepared } from './lead-pools.mjs';
 
 // ---------- Import ----------
 const HEADERS = {
@@ -262,7 +262,7 @@ export async function executeDiscovery(ctx, runId) {
   for (const [i, cand] of candidates.entries()) {
     cand.name = `${cand.first_name} ${cand.last_name}`.trim();
     const evidence = await ctx.db.all('SELECT * FROM evidence WHERE workspace_id=? AND (contact_id=? OR (company_id=? AND contact_id IS NULL)) ORDER BY event_date DESC', [ctx.ws, cand.id, cand.company_id]);
-    let result = checkCandidate(ctx, config.source==='research'?{...config,requireVerifiedEmail:true}:config, c.context.data, cand, evidence, today), by = 'rules';
+    let result = config.source==='research' ? await assessPrepared(ctx,{...c,config},cand,evidence) : checkCandidate(ctx,config,c.context.data,cand,evidence,today), by = 'rules';
     assessed.push({ cand, result, by });
     if (i % 5 === 4) await progress({ stage: 'checking', checked: i + 1, total: candidates.length });
   }

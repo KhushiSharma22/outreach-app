@@ -4,7 +4,7 @@
 import { randomBytes } from 'node:crypto';
 import { transport } from './mailbox.mjs';
 import { id, now } from './db.mjs';
-import { conflict, invalid, notFound, EMAIL_RE, normEmail, localView } from './lib.mjs';
+import { conflict, invalid, notFound, EMAIL_RE, normEmail, localView, zonedToUtc } from './lib.mjs';
 import { loadCampaign, scheduleErrors } from './campaigns.mjs';
 import { validApproval, cancelLeadTasks } from './drafts.mjs';
 import { enrollOnSend, stopEnrollments, advanceEnrollment, holdOverdue, planFollowups } from './sequences.mjs';
@@ -22,11 +22,25 @@ export async function blockers(ctx, c) {
   if (unapproved) out.push({ code: 'approvals', message: `Approve every email (${unapproved} still need approval).` });
   const bad = sel.filter(l => !l.email || !EMAIL_RE.test(l.email) || l.suppressed).length;
   if (bad) out.push({ code: 'recipients', message: `${bad} selected recipient${bad > 1 ? 's are' : ' is'} missing a usable email or suppressed.` });
+  if(cfg.delivery==='smtp'){
+    if(!await ctx.db.get('SELECT 1 FROM mailboxes WHERE workspace_id=?',[ctx.ws]))out.push({code:'mailbox',message:'Connect your email before launching scheduled delivery.'});
+    if(!ctx.publicUrl?.startsWith('https://'))out.push({code:'unsubscribe_url',message:'Configure a public HTTPS URL for unsubscribe links before launching scheduled delivery.'});
+  }
   const se = scheduleErrors(cfg.schedule);
   if (se.length) out.push({ code: 'schedule', message: 'Choose a valid schedule. ' + se.join(' ') });
   if (cfg.approval !== 'daily') out.push({ code: 'approval_mode', message: 'Pre-approved rules mode is unavailable.' });
   if ((await ctx.db.get('SELECT sending_stopped FROM workspaces WHERE id=?', [ctx.ws])).sending_stopped) out.push({ code: 'sending_stopped', message: 'Sending is stopped for this workspace.' });
   return out;
+}
+
+export function scheduledDue(config,at=Date.now()){
+ const schedule=config.schedule,local=localView(at,schedule.timezone);
+ for(let n=0;n<8;n++){
+  const date=new Date(Date.parse(local.date+'T12:00:00Z')+n*864e5).toISOString().slice(0,10);
+  const when=Date.parse(zonedToUtc(date,schedule.time,schedule.timezone)),view=localView(when,schedule.timezone);
+  if(schedule.days.includes(view.weekday))return new Date(Math.max(at,when)).toISOString();
+ }
+ throw invalid('Select at least one sending day.');
 }
 
 async function createInitialTask(ctx, c, leadId, revisionId) {
@@ -39,7 +53,7 @@ async function createInitialTask(ctx, c, leadId, revisionId) {
     return existing.id;
   }
   const t = now();
-  await ctx.db.insert('send_tasks', { id: id(), workspace_id: ctx.ws, campaign_id: c.id, lead_id: leadId, contact_id: r.contact_id, kind: 'initial', draft_revision_id: r.id, enrollment_id: null, step_index: null, to_email: r.email, subject: r.subject, body: r.body, due_at: t, status: 'pending', status_reason: null, dedupe_key: key, confirmed_at: null, confirmed_by: null, created_at: t, updated_at: t });
+  await ctx.db.insert('send_tasks', { id: id(), workspace_id: ctx.ws, campaign_id: c.id, lead_id: leadId, contact_id: r.contact_id, kind: 'initial', draft_revision_id: r.id, enrollment_id: null, step_index: null, to_email: r.email, subject: r.subject, body: r.body, due_at: c.config.delivery==='smtp'?scheduledDue(c.config):t, status: 'pending', status_reason: null, dedupe_key: key, confirmed_at: null, confirmed_by: null, created_at: t, updated_at: t });
   return true;
 }
 // Called inside the approval transaction: approved content for a running campaign becomes a send task.
@@ -64,10 +78,10 @@ export async function launch(ctx, campaignId, { revision }) {
       if (await createInitialTask(ctx, c, l.id, l.current_revision_id)) created++;
     }
     // The launch batch counts as today's occurrence so the scheduler does not run a second batch today.
-    const today = localView(Date.now(), c.config.schedule.timezone).date;
+    const today = localView(c.config.delivery==='smtp'?Date.parse(scheduledDue(c.config)):Date.now(), c.config.schedule.timezone).date;
     const latest = await ctx.db.get("SELECT id FROM discovery_runs WHERE campaign_id=? AND status='completed' ORDER BY batch DESC LIMIT 1", [c.id]);
     if (latest && !await ctx.db.get('SELECT 1 FROM discovery_runs WHERE campaign_id=? AND occurrence_date=?', [c.id, today])) await ctx.db.run('UPDATE discovery_runs SET occurrence_date=? WHERE id=?', [today, latest.id]);
-    await ctx.db.audit(ctx.ws, c.id, 'campaign.launched', `Campaign launched; ${created} approved email${created === 1 ? '' : 's'} ready to send manually`, { created }, ctx.user?.id);
+    await ctx.db.audit(ctx.ws, c.id, 'campaign.launched', `Campaign launched; ${created} approved email${created === 1 ? '' : 's'} ready for ${c.config.delivery==='smtp'?'scheduled SMTP delivery':'manual sending'}`, { created }, ctx.user?.id);
   });
   return { campaign: await loadCampaign(ctx, c.id), created };
 }
@@ -96,12 +110,13 @@ function blockedReason(t) {
   if (t.status !== 'pending' && t.status !== 'held') return null;
   if (t.sending_stopped) return 'Sending is stopped for this workspace.';
   if (t.campaign_status !== 'active') return `Campaign is ${t.campaign_status}.`;
+  if (t.email_status === 'invalid') return 'Recipient email is invalid.';
   if (t.suppressed) return `Recipient is suppressed (${t.suppressed}).`;
   if (t.kind === 'followup' && t.sequence_status !== 'active') return t.sequence_status === 'draft' ? 'Sequence is being edited.' : 'Sequence is paused.';
   if (t.kind === 'followup' && t.enrollment_status !== 'active') return 'Follow-ups stopped for this recipient.';
   return null;
 }
-const TASK_SELECT = `SELECT st.*, c.name campaign_name, c.status campaign_status, w.sending_stopped, ct.first_name, ct.last_name, co.name company,
+const TASK_SELECT = `SELECT st.*, c.name campaign_name, c.status campaign_status, w.sending_stopped, ct.first_name, ct.last_name, ct.email_status, co.name company,
   s.reason suppressed, e.status enrollment_status, sq.status sequence_status, v.steps sequence_steps, m.sent_at, m.proof
   FROM send_tasks st JOIN campaigns c ON c.id=st.campaign_id JOIN workspaces w ON w.id=st.workspace_id JOIN contacts ct ON ct.id=st.contact_id JOIN companies co ON co.id=ct.company_id
   LEFT JOIN suppressions s ON s.workspace_id=st.workspace_id AND s.email=st.to_email LEFT JOIN enrollments e ON e.id=st.enrollment_id
@@ -196,26 +211,18 @@ export async function addSuppression(ctx, { email, reason = 'manual', contact_id
   email = normEmail(email);
   if (!email || !EMAIL_RE.test(email)) throw invalid('Enter a valid email address.');
   if (!['manual', 'opt_out', 'bounce'].includes(reason)) throw invalid('Unknown suppression reason.');
-  const existing = await ctx.db.get('SELECT * FROM suppressions WHERE workspace_id=? AND email=?', [ctx.ws, email]);
-  if (existing) {
-    if(reason === 'opt_out' && existing.reason !== 'opt_out') {
-      await ctx.db.run("UPDATE suppressions SET reason='opt_out' WHERE id=?",[existing.id]);
-      return {...existing, reason:'opt_out'};
-    }
-    return existing;
-  }
-  const ct = contact_id || (await ctx.db.get('SELECT id FROM contacts WHERE workspace_id=? AND email=?', [ctx.ws, email]))?.id || null;
-  const row = { id: id(), workspace_id: ctx.ws, email, contact_id: ct, reason, note: String(note).slice(0, 500), actor: ctx.user?.id, created_at: now() };
-  await ctx.db.tx(async () => {
-    await ctx.db.insert('suppressions', row);
-    if (ct) {
-      await stopEnrollments(ctx, ct, 'suppressed');
-      await ctx.db.run("UPDATE send_tasks SET status='canceled', status_reason='Recipient suppressed', updated_at=? WHERE contact_id=? AND status IN ('pending','held')", [now(), ct]);
-    }
-    await ctx.db.audit(ctx.ws, null, 'suppression.added', `${email} suppressed (${reason})`, {}, ctx.user?.id);
+  return ctx.db.tx(async()=>{
+    await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
+    let row=await ctx.db.get('SELECT * FROM suppressions WHERE workspace_id=? AND email=?',[ctx.ws,email]);
+    const ct=(await ctx.db.get('SELECT id FROM contacts WHERE workspace_id=? AND email=?',[ctx.ws,email]))?.id||null;
+    if(row){if(reason==='opt_out'&&row.reason!=='opt_out'){await ctx.db.run("UPDATE suppressions SET reason='opt_out' WHERE id=?",[row.id]);row={...row,reason:'opt_out'};}}
+    else{row={id:id(),workspace_id:ctx.ws,email,contact_id:ct,reason,note:String(note).slice(0,500),actor:ctx.user?.id,created_at:now()};await ctx.db.insert('suppressions',row);await ctx.db.audit(ctx.ws,null,'suppression.added',`${email} suppressed (${reason})`,{},ctx.user?.id);}
+    if(ct)await stopEnrollments(ctx,ct,'suppressed');
+    await ctx.db.run("UPDATE send_tasks SET status='canceled',status_reason='Recipient suppressed',updated_at=? WHERE workspace_id=? AND to_email=? AND status IN ('pending','held')",[now(),ctx.ws,email]);
+    return row;
   });
-  return row;
 }
+
 export async function removeSuppression(ctx, suppressionId) {
   const s = await ctx.db.get('SELECT * FROM suppressions WHERE id=? AND workspace_id=?', [suppressionId, ctx.ws]);
   if (!s) throw notFound('Suppression');
@@ -230,15 +237,22 @@ export async function setSendingStopped(ctx, stopped) {
   return { sending_stopped: !!stopped };
 }
 
-export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false} = {}) {
+export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false,automatic=false} = {}, makeTransport=transport) {
  if (!publicUrl.startsWith('https://')) throw invalid('A public HTTPS URL is required for unsubscribe links.');
- const {row,client}=await transport(ctx);
+ const {row,client}=await makeTransport(ctx);
  let t, token;
- await ctx.db.tx(async()=>{
+ try {await ctx.db.tx(async()=>{
   await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
   t=await loadTask(ctx,taskId);
   if(t.kind==='followup' && no_reply_confirmed!==true) throw invalid('Check your inbox and confirm no reply or opt-out before this follow-up.');
   if(t.status!=='pending'||blockedReason(t)||Date.parse(t.due_at)>Date.now()) throw conflict('blocked','This task is not eligible for sending.');
+  const campaign=await loadCampaign(ctx,t.campaign_id);
+  if(automatic && (campaign.config.delivery!=='smtp'||!campaign.config.schedule.days.includes(localView(Date.now(),campaign.config.schedule.timezone).weekday)||localView(Date.now(),campaign.config.schedule.timezone).time<campaign.config.schedule.time))throw conflict('schedule_closed','Outside the campaign sending schedule.');
+  if(t.kind==='initial'){
+   const local=localView(Date.now(),campaign.config.schedule.timezone);const start=new Date(zonedToUtc(local.date,'00:00',campaign.config.schedule.timezone)).toISOString();
+   const sent=await ctx.db.get("SELECT count(*) n FROM send_tasks WHERE campaign_id=? AND kind='initial' AND status IN ('sending','sent','unknown') AND updated_at>=?",[t.campaign_id,start]);
+   if(Number(sent.n)>=campaign.config.target)throw conflict('campaign_send_limit','Campaign daily sending target reached.');
+  }
   if(t.kind==='initial'&&!await validApproval(ctx,t.draft_revision_id)) throw conflict('approval_invalid','Review and approve this message again.');
   const n=await ctx.db.get("SELECT count(*) n FROM send_tasks WHERE workspace_id=? AND status IN ('sending','sent','unknown') AND updated_at>=?",[ctx.ws,now().slice(0,10)]);
   if(Number(n.n)>=30) throw conflict('daily_send_limit','Daily safety cap reached: 30 emails including follow-ups (UTC).');
@@ -246,13 +260,13 @@ export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false
   token=previous?.token||randomBytes(32).toString('hex');
   if(!previous) await ctx.db.insert('optout_tokens',{token,workspace_id:ctx.ws,email:t.to_email});
   await ctx.db.run("UPDATE send_tasks SET status='sending',updated_at=? WHERE id=?",[now(),t.id]);
- });
+ });} catch(e){client.close();throw e;}
  const url=publicUrl+'/unsubscribe/'+token;
  const body=t.body+'\n\nBusiness marketing message\n'+row.postal_address+'\nUnsubscribe: '+url;
  try {
   // Last check before handing the message to the provider.
   const current=await loadTask(ctx,t.id);
-  if(blockedReason({...current,status:'pending'})) throw new Error('Eligibility changed before dispatch');
+  if(blockedReason({...current,status:'pending'}) || (t.kind==='initial'&&!await validApproval(ctx,t.draft_revision_id))) throw new Error('Eligibility changed before dispatch');
   await client.sendMail({from:row.sender,to:t.to_email,subject:t.subject,text:body,disableFileAccess:true,disableUrlAccess:true});
  } catch {
   await ctx.db.run("UPDATE send_tasks SET status='unknown', status_reason='SMTP outcome uncertain. Review mailbox before any retry.',updated_at=? WHERE id=?",[now(),t.id]);
@@ -260,8 +274,25 @@ export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false
  } finally {client.close();}
  await ctx.db.tx(async()=>{
   await ctx.db.run("UPDATE send_tasks SET status='sent',confirmed_at=?,updated_at=? WHERE id=?",[now(),now(),t.id]);
-  await ctx.db.insert('messages',{id:id(),workspace_id:ctx.ws,campaign_id:t.campaign_id,send_task_id:t.id,contact_id:t.contact_id,to_email:t.to_email,subject:t.subject,body,sent_at:now(),proof:'smtp_accepted',recorded_by:ctx.user.id,created_at:now()});
+  await ctx.db.insert('messages',{id:id(),workspace_id:ctx.ws,campaign_id:t.campaign_id,send_task_id:t.id,contact_id:t.contact_id,to_email:t.to_email,subject:t.subject,body,sent_at:now(),proof:'smtp_accepted',recorded_by:ctx.user?.id||'system',created_at:now()});
   if(t.kind==='initial') await enrollOnSend(ctx,t.campaign_id,t.lead_id); else await advanceEnrollment(ctx,t.enrollment_id,t.step_index);
  });
  return shapeTask(await loadTask(ctx,t.id));
+}
+
+// Called by the scheduler. Exact draft approval and suppression are checked again by smtpSend.
+// Unknown SMTP outcomes are never automatically retried. Follow-ups require a human inbox check.
+export async function dispatchApproved(ctx,campaignId,at=Date.now(),send=smtpSend){
+ const c=await loadCampaign(ctx,campaignId),s=c.config.schedule,local=localView(at,s.timezone);
+ if(c.status!=='active'||c.config.delivery!=='smtp'||!s.days.includes(local.weekday)||local.time<s.time)return;
+ const tasks=await ctx.db.all("SELECT id FROM send_tasks WHERE workspace_id=? AND campaign_id=? AND kind='initial' AND status='pending' AND due_at<=? ORDER BY due_at,id LIMIT 30",[ctx.ws,c.id,new Date(at).toISOString()]);
+ for(const task of tasks){
+  try{await send(ctx,task.id,ctx.publicUrl,{automatic:true});}
+  catch(e){
+   if(['daily_send_limit','campaign_send_limit','schedule_closed'].includes(e.code))break;
+   if(['blocked','approval_invalid'].includes(e.code))continue;
+   await ctx.db.audit(ctx.ws,c.id,'delivery.error','Scheduled email could not be sent',{task_id:task.id,code:e.code||'delivery_error'});
+   break;
+  }
+ }
 }

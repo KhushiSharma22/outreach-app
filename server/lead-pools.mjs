@@ -45,23 +45,33 @@ async function candidates(ctx,c,source,day){
  AND NOT EXISTS(SELECT 1 FROM campaign_leads l WHERE l.campaign_id=p.campaign_id AND l.contact_id=p.contact_id)
  ORDER BY p.available_on,p.created_at,ct.id LIMIT 5000`,[c.id,ctx.ws,c.id,source,day]);
 }
-async function assessed(ctx,c,cand){
+export async function assessPrepared(ctx,c,cand,evidence,score=null){
+ if(score===null){const approved=await ctx.db.get('SELECT score FROM research_approvals WHERE workspace_id=? AND campaign_id=? AND contact_id=?',[ctx.ws,c.id,cand.id]);score=approved?.score??null;}
+ const result=checkCandidate(ctx,{...c.config,requireVerifiedEmail:true,...(score!==null?{quality:0}:{})},c.context.data,cand,evidence,localView(Date.now(),c.config.schedule.timezone||'UTC').date);
+ if(score!==null){result.score=score;if(result.decision==='qualified'&&score<c.config.quality)result.decision='review';result.rationale='Admin quality score: '+score+'/100. '+result.rationale;}
+ return result;
+}
+async function assessed(ctx,c,cand,score=null){
  const evidence=await ctx.db.all('SELECT * FROM evidence WHERE workspace_id=? AND (contact_id=? OR (company_id=? AND contact_id IS NULL))',[ctx.ws,cand.id,cand.company_id]);
  // Research lists must have verified email even if the user relaxes that requirement for uploads.
- return checkCandidate(ctx,{...c.config,requireVerifiedEmail:true},c.context.data,cand,evidence,localView(Date.now(),c.config.schedule.timezone||'UTC').date);
+ return assessPrepared(ctx,c,cand,evidence,score);
 }
 // Trusted CLI and super-admin endpoint only. Customer routes cannot seed research.
 export async function seedResearch(ctx,campaignId,{csv,filename='Research list',available_on=now().slice(0,10)}){
  const c=await loadCampaign(ctx,campaignId);
  if(c.status==='stopped')throw conflict('campaign_stopped','This campaign is stopped.');
  if(!/^\d{4}-\d{2}-\d{2}$/.test(available_on)||!Number.isFinite(Date.parse(available_on))||new Date(available_on).toISOString().slice(0,10)!==available_on)throw invalid('Use an availability date in YYYY-MM-DD format.');
+ const rows=parseCsv(csv),headers=(rows.shift()||[]).map(h=>h.trim().toLowerCase()),scoreIndex=headers.indexOf('quality_score'),emailIndex=headers.indexOf('email');
+ const scores=new Map();for(const row of rows){const raw=scoreIndex<0?'100':String(row[scoreIndex]||'').trim();const score=Number(raw);if(!raw||!Number.isInteger(score)||score<0||score>100)throw invalid('quality_score must be an integer from 0 to 100.');scores.set(String(row[emailIndex]||'').trim().toLowerCase(),score);}
  const ids=[],rejected=[];let imported,ready=0;
  await ctx.db.tx(async()=>{
  imported=await importCsv(ctx,{csv,filename},ids);
  for(const contactId of [...new Set(ids)]){
  const cand=await ctx.db.get(`SELECT ct.*,co.name company,co.domain,co.industry,co.employees,co.location company_location,co.relationship,s.reason suppressed FROM contacts ct JOIN companies co ON co.id=ct.company_id LEFT JOIN suppressions s ON s.workspace_id=ct.workspace_id AND s.email=ct.email WHERE ct.id=? AND ct.workspace_id=?`,[contactId,ctx.ws]);
- const result=await assessed(ctx,c,cand);
+ const score=scores.get(cand.email)??100;
+ const result=await assessed(ctx,c,cand,score);
  if(result.decision!=='qualified'){rejected.push({contact_id:contactId,reason:result.rationale});continue;}
+ await ctx.db.run('INSERT INTO research_approvals(workspace_id,campaign_id,contact_id,score,approved_by,approved_at) VALUES(?,?,?,?,?,?) ON CONFLICT(campaign_id,contact_id) DO UPDATE SET score=excluded.score,approved_by=excluded.approved_by,approved_at=excluded.approved_at',[ctx.ws,c.id,contactId,score,ctx.user?.id,now()]);
  await ctx.db.run(`INSERT INTO campaign_contact_pool(workspace_id,campaign_id,contact_id,source,available_on,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(campaign_id,contact_id,source) DO UPDATE SET available_on=excluded.available_on`,[ctx.ws,c.id,contactId,'research',available_on,now()]);ready++;
  }
  await ctx.db.audit(ctx.ws,c.id,'research.prepared','Research availability updated',{ready,rejected:rejected.length},ctx.user?.id);

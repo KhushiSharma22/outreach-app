@@ -5,6 +5,7 @@ import { id, now } from './db.mjs';
 import { json, localView } from './lib.mjs';
 import { executeDiscovery, failRun, startDiscovery } from './sourcing.mjs';
 import { executeDraftRun, startDraftRun } from './drafts.mjs';
+import { dispatchApproved } from './delivery.mjs';
 import { planFollowups } from './sequences.mjs';
 
 const STALE_MS = () => +(process.env.JOB_STALE_MS || 15 * 60e3); // a running job older than this was cut off
@@ -98,6 +99,7 @@ export function registerHandlers(jobs, db, ctxFor) {
 // Creates at most one discovery occurrence per campaign per local day, only for today (no backlog
 // after downtime), and plans due follow-ups.
 export async function runScheduler(db, ctxFor, at = Date.now()) {
+  await db.run("UPDATE send_tasks SET status='unknown',status_reason='Worker stopped during sending. Check mailbox before retrying.',updated_at=? WHERE status='sending' AND updated_at<?",[new Date(at).toISOString(),new Date(at-15*60e3).toISOString()]);
   for (const c of await db.all("SELECT c.id, c.workspace_id, v.data FROM campaigns c JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE c.status='active'")) {
     const ctx = ctxFor(c.workspace_id), s = json(c.data).schedule;
     try {
@@ -109,5 +111,6 @@ export async function runScheduler(db, ctxFor, at = Date.now()) {
     } catch (e) {
       await db.audit(c.workspace_id, c.id, 'scheduler.error', 'Scheduled work could not be created', { error: String(e.message) });
     }
+    await dispatchApproved(ctx,c.id,at);
   }
 }

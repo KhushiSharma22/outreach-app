@@ -44,7 +44,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
   if (process.env.VERCEL && !databaseUrl) throw new Error('DATABASE_URL is required on Vercel: serverless functions have no persistent disk for SQLite.');
   const db = await openDb(databaseUrl ? { url: databaseUrl } : { file: dbFile });
   const jobs = createJobs(db, log, { serverless });
-  const ctxFor = (ws, user = null) => ({ db, ws, user, jobs });
+  const ctxFor = (ws, user = null) => ({ db, ws, user, jobs, publicUrl });
   registerHandlers(jobs, db, ws => ctxFor(ws));
 
   publicUrl = publicUrl.replace(/\/+$/, '');

@@ -79,6 +79,7 @@ export function normalizeConfig(base, patch = {}) {
     if ('time' in s) c.schedule.time = String(s.time || '');
     if ('timezone' in s) c.schedule.timezone = String(s.timezone || '');
   }
+  if ('delivery' in patch) {if(!['manual','smtp'].includes(patch.delivery))throw invalid('Choose manual or scheduled SMTP delivery.');c.delivery=patch.delivery;}
   if ('approval' in patch) {
     if (patch.approval === 'rules') throw invalid('Pre-approved rules mode is not available yet. Every daily batch needs your review.', { approval: 'Unavailable.' });
     c.approval = 'daily';

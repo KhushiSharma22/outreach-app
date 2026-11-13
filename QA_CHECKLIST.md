@@ -151,3 +151,17 @@ Use a separate QA workspace and inboxes you control. Do not send test outreach t
 - [ ] All blocking defects resolved; remaining limitations recorded with owners.
 
 Known boundaries: no live web discovery, no automatic research-URL fetching, no LLM lead-fit scoring, no AI follow-up generation, and no automatic reply/bounce detection through SMTP alone. Supplying an API key is separate from deploying code. Manual/live checklist items remain unverified until a tester records their results.
+
+## Scheduled delivery additions — 14 November 2026
+
+- [ ] Admin quality_score is stored with actor/time and shown in discovered lead scores; omitted values default to 100. Invalid and below-threshold values do not become ready research.
+- [ ] Opt-outs, invalid emails, targeting and required signals remain enforced for admin-scored contacts.
+- [ ] Choose Automatic SMTP delivery; launch is blocked without a mailbox or public HTTPS unsubscribe URL.
+- [ ] Approve and launch before the configured time: nothing sends early. At the next scheduled tick, approved initial emails send without a manual click.
+- [ ] Selected weekday/timezone and campaign daily target control dispatch. Weekend/off-day approval waits for the next selected day.
+- [ ] New daily research batches allocate up to the target, create drafts and wait for exact-content approval. Insufficient supply does not lower quality or reuse contacts.
+- [ ] Concurrent scheduler/manual send attempts produce one provider submission per task. Campaign and workspace caps hold under concurrent PostgreSQL requests.
+- [ ] Pause, stop, revoked approval, invalid email and opt-out prevent pending delivery. Repeat opt-outs still cancel pending work.
+- [ ] SMTP timeout/worker termination appears in Check mailbox and is never retried automatically.
+- [ ] Confirm a frequent production cron is actually running; the original daily Vercel trigger is insufficient. Test with the browser closed.
+- [ ] Follow-ups continue to require inbox-check confirmation; automatic initial sending does not imply reply/bounce detection.
