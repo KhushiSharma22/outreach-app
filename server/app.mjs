@@ -125,9 +125,9 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
 
   const campaignView = async (ctx, c) => ({ ...c, blockers: await delivery.blockers(ctx, c), latest_run: await db.get('SELECT * FROM discovery_runs WHERE campaign_id=? ORDER BY batch DESC LIMIT 1', [c.id]) || null, sequence: await db.get('SELECT id, status FROM sequences WHERE campaign_id=?', [c.id]) || null });
   route('GET', '/api/campaigns', async ctx => ({ items: await campaigns.listCampaigns(ctx) }));
-  route('POST', '/api/campaigns', async (ctx, p, body) => await campaignView(ctx, await campaigns.createCampaign(ctx, body)), { status: 201 });
+  route('POST', '/api/campaigns', async (ctx, p, body) => {if(body.source && body.source!=='research' && !await admin.isOperator(db,ctx.user.email))throw new AppError(403,'operator_only','Lead lists are managed by the admin.');return await campaignView(ctx, await campaigns.createCampaign(ctx, body));}, { status: 201 });
   route('GET', '/api/campaigns/:id', async (ctx, p) => await campaignView(ctx, await campaigns.loadCampaign(ctx, p.id)));
-  route('PATCH', '/api/campaigns/:id', async (ctx, p, body) => await campaignView(ctx, await campaigns.updateCampaign(ctx, p.id, body)));
+  route('PATCH', '/api/campaigns/:id', async (ctx, p, body) => {if(body.config?.source && body.config.source!=='research' && !await admin.isOperator(db,ctx.user.email))throw new AppError(403,'operator_only','Lead lists are managed by the admin.');return await campaignView(ctx, await campaigns.updateCampaign(ctx, p.id, body));});
   route('GET', '/api/admin/research-campaigns', async ctx=>{
     if(!admin.isSuperAdmin(ctx.user.email))throw new AppError(403,'super_admin_only','Only super admins can prepare research lists.');
     return {items:await db.all("SELECT c.id,c.name,c.workspace_id,w.name workspace,(SELECT u.email FROM users u WHERE u.workspace_id=w.id AND u.role='owner' ORDER BY u.created_at LIMIT 1) owner_email FROM campaigns c JOIN workspaces w ON w.id=c.workspace_id WHERE c.status<>'stopped' ORDER BY c.created_at DESC")};
@@ -149,9 +149,9 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
     return leadPools.seedResearch({...ctx,ws:c.workspace_id},p.id,body);
   },{status:201,idem:true});
   route('GET', '/api/campaigns/:id/sources', async (ctx,p)=>leadPools.sourceStatus(ctx,p.id));
-  route('POST', '/api/campaigns/:id/import-preview', async (ctx,p,body)=>{await campaigns.loadCampaign(ctx,p.id);const {accepted,...preview}=leadPools.previewUpload(body);return preview;});
-  route('POST', '/api/campaigns/:id/imports', async (ctx,p,body)=>leadPools.uploadForCampaign(ctx,p.id,body), {status:201,idem:true});
-  route('POST', '/api/campaigns/:id/discovery-runs', async (ctx, p) => await sourcing.startDiscovery(ctx, p.id), { idem: true, status: 202 });
+  route('POST', '/api/campaigns/:id/import-preview', async (ctx,p,body)=>{await campaigns.loadCampaign(ctx,p.id);if(!await admin.isOperator(db,ctx.user.email))throw new AppError(403,'operator_only','Lead imports are managed by the admin.');const {accepted,...preview}=leadPools.previewUpload(body);return preview;});
+  route('POST', '/api/campaigns/:id/imports', async (ctx,p,body)=>{if(!await admin.isOperator(db,ctx.user.email))throw new AppError(403,'operator_only','Lead imports are managed by the admin.');return leadPools.uploadForCampaign(ctx,p.id,body);}, {status:201,idem:true});
+  route('POST', '/api/campaigns/:id/discovery-runs', async (ctx, p) => {const c=await campaigns.loadCampaign(ctx,p.id);if(c.config.source!=='research' && !await admin.isOperator(db,ctx.user.email))throw new AppError(403,'operator_only','Lead lists are managed by the admin.');return await sourcing.startDiscovery(ctx,p.id);}, { idem: true, status: 202 });
   route('GET', '/api/campaigns/:id/batches', async (ctx, p) => ({ items: await sourcing.listRuns(ctx, p.id) }));
   route('GET', '/api/runs/:id', async (ctx, p) => await sourcing.getRun(ctx, p.id));
   route('GET', '/api/campaigns/:id/leads', async (ctx, p, b, q) => await drafts.listLeads(ctx, p.id, q));

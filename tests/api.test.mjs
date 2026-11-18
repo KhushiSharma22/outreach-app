@@ -165,12 +165,12 @@ test('repeated launch requests create work once; manual sends are labeled as use
   const h = { headers: { 'idempotency-key': 'launch-' + c.id } };
   const l1 = await ok('POST', `/api/campaigns/${c.id}/launch`, { revision: c.revision }, h);
   const l2 = await ok('POST', `/api/campaigns/${c.id}/launch`, { revision: c.revision }, h);
-  assert.equal(l1.created_tasks, 28);
-  assert.equal(l2.created_tasks, 28);
+  assert.equal(l1.created_tasks, 30);
+  assert.equal(l2.created_tasks, 30);
   const l3 = await ok('POST', `/api/campaigns/${c.id}/launch`, { revision: c.revision });
   assert.equal(l3.status, 'active');
   const tasks = await ok('GET', `/api/send-tasks?campaign_id=${c.id}`);
-  assert.equal(tasks.total, 28);
+  assert.equal(tasks.total, 30);
   const t = tasks.items[0];
   const s1 = await ok('POST', `/api/send-tasks/${t.id}/confirm-sent`, {});
   const s2 = await ok('POST', `/api/send-tasks/${t.id}/confirm-sent`, {});
@@ -280,7 +280,7 @@ test('workspace isolation and request protections', async () => {
   // Stale campaign revision conflicts.
   await ok('PATCH', `/api/campaigns/${c.id}`, { revision: c.revision, name: 'Renamed' });
   assert.equal((await api('PATCH', `/api/campaigns/${c.id}`, { revision: c.revision, name: 'Again' })).status, 409);
-  assert.equal((await api('PATCH', `/api/campaigns/${c.id}`, { revision: c.revision + 1, config: { approval: 'rules' } })).status, 422);
+  assert.equal((await api('PATCH', `/api/campaigns/${c.id}`, { revision: c.revision + 1, config: { approval: 'rules' } })).status, 200);
 });
 
 test('brief interpretation keeps the prompt and only proposes detected filters', async () => {
@@ -293,15 +293,16 @@ test('brief interpretation keeps the prompt and only proposes detected filters',
   assert.deepEqual(c.config.filters.roles, ['Head of Growth']);
 });
 
-test('ordinary customers can import campaign contacts but cannot prepare research',async()=>{
+test('ordinary customers cannot import contacts or prepare research',async()=>{
  const s=await seedWorkspace(app.db,{name:'Customer',userName:'Customer',email:'customer@upload.test'});
  const auth={auth:s.token};
- const c=await ok('POST','/api/campaigns',{name:'My contacts',source:'upload'},auth);
+ const c=await ok('POST','/api/campaigns',{name:'Admin leads'},auth);
  const csv='first_name,last_name,email,company\nA,Example,a@upload.test,Example';
- const preview=await ok('POST',`/api/campaigns/${c.id}/import-preview`,{csv},auth);
- assert.equal(preview.valid,1);assert.equal(preview.accepted,undefined);
- const imported=await ok('POST',`/api/campaigns/${c.id}/imports`,{csv},auth);assert.equal(imported.linked,1);
- assert.equal((await ok('GET',`/api/campaigns/${c.id}/sources`,null,auth)).uploaded_ready,1);
+ assert.equal((await api('POST',`/api/campaigns/${c.id}/import-preview`,{csv},auth)).status,403);
+ assert.equal((await api('POST',`/api/campaigns/${c.id}/imports`,{csv},auth)).status,403);
+ assert.equal((await api('POST','/api/imports',{csv},auth)).status,403);
+ assert.equal((await api('POST','/api/campaigns',{source:'upload'},auth)).status,403);
+ assert.equal((await api('PATCH',`/api/campaigns/${c.id}`,{revision:c.revision,config:{source:'import'}},auth)).status,403);
  assert.equal((await api('POST',`/api/admin/campaigns/${c.id}/research`,{csv},auth)).status,403);
  assert.equal((await api('GET',`/api/campaigns/${c.id}/sources`,null,{auth:other.token})).status,404);
 });

@@ -46,7 +46,7 @@ export function defaultConfig(context) {
     offer: context.offering,
     filters: { roles: [], industries: [], locations: [], sizes: [], seniority: [], exclude: ['Existing customers', 'Competitors', 'Active opportunities'] },
     notes: '', source: 'research', sourceRef: '', signals: ['Hiring', 'Funding'], freshness: 30,
-    min: 25, target: 28, quality: 80, requireVerifiedEmail: true,
+    min: 25, target: 30, quality: 80, requireVerifiedEmail: true,
     writing: { tone: context.tone, length: 'Balanced', angle: 'Signal-led', cta: 'Start a conversation' },
     schedule: { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], time: '09:00', timezone: 'Asia/Kolkata' },
     approval: 'daily', delivery: 'manual',
@@ -81,8 +81,8 @@ export function normalizeConfig(base, patch = {}) {
   }
   if ('delivery' in patch) {if(!['manual','smtp'].includes(patch.delivery))throw invalid('Choose manual or scheduled SMTP delivery.');c.delivery=patch.delivery;}
   if ('approval' in patch) {
-    if (patch.approval === 'rules') throw invalid('Pre-approved rules mode is not available yet. Every daily batch needs your review.', { approval: 'Unavailable.' });
-    c.approval = 'daily';
+    if (!['daily', 'rules'].includes(patch.approval)) throw invalid('Choose an approval mode.');
+    c.approval = patch.approval;
   }
   return c;
 }
@@ -141,10 +141,13 @@ export async function updateCampaign(ctx, campaignId, body) {
       if (name !== c.name) { await ctx.db.run('UPDATE campaigns SET name=? WHERE id=?', [name, c.id]); changes.push('name'); }
     }
     if (body.context === 'latest') {
+      if (c.status !== 'draft' && c.config.approval === 'rules') throw invalid('Switch to daily review before changing company context.');
       const cur = await currentContext(ctx);
       if (cur.id !== c.context_version_id) { await ctx.db.run('UPDATE campaigns SET context_version_id=? WHERE id=?', [cur.id, c.id]); changes.push('context'); }
     }
     if (body.config) {
+      if (c.status !== 'draft' && c.config.approval === 'rules' && Object.keys(body.config).some(k => k !== 'approval') ) throw invalid('Switch to daily review before changing an automatically approved campaign.');
+      if (c.status !== 'draft' && body.config.approval === 'rules' && c.config.approval !== 'rules') throw invalid('Automatic approval must be authorised when launching a new campaign.');
       const next = normalizeConfig(c.config, body.config);
       if (c.status !== 'draft') { const e = scheduleErrors(next.schedule); if (e.length) throw invalid(e.join(' '), { schedule: e }); }
       if (JSON.stringify(next) !== JSON.stringify(c.config)) {

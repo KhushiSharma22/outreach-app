@@ -100,16 +100,10 @@ test('every screen renders from the API, and the full manual-send journey works 
   assert.match(html(), /Follow-up sequence launched/);
 });
 
-test('campaign CSV journey previews, imports and reviews customer contacts',async()=>{
- const c=await run(`Api.post('/api/campaigns',{name:'Customer upload',source:'upload',brief:{filters:{roles:['Founder'],locations:['India']},signals:[]}})`);
+test('campaign lead screen displays admin-managed leads without customer import controls',async()=>{
+ const c=await run(`Api.post('/api/campaigns',{name:'Admin leads',brief:{filters:{roles:['Founder']},signals:[]}})`);
  await run(`openCampaign('${c.id}','builder')`);
  await run('continueFlow()');
- assert.match(html(),/Research Leads/);assert.match(html(),/Import your own contacts/);
- const csv='first_name,last_name,email,company,role,employees,location\nAsha,Example,asha@upload.example,Upload Co,Founder,5,India';
- await run(`previewCampaignFile({files:[{name:'contacts.csv',size:200,text:async()=>${JSON.stringify(csv)}}]})`);
- assert.match(html(),/1 contacts ready/);
- await run('confirmCampaignImport()');assert.match(html(),/1 contacts added to this campaign/);
- await run('requestSourceLeads()');await settle();
- await until(()=>run('S.leads && S.leads.counts.review')===1 && html().includes('Needs review'));
- assert.match(html(),/Needs review/);
+ assert.match(html(),/Your admin prepares leads for this campaign/);
+ assert.doesNotMatch(html(),/Import your own contacts|Upload your contacts/);
 });

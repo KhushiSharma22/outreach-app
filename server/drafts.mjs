@@ -200,7 +200,7 @@ export async function approveDrafts(ctx, { items, confirm }, onApproved) {
           await ctx.db.insert('approvals', { id: id(), draft_id: d.id, revision_id: r.id, hash: r.hash, actor: ctx.user?.id || 'system', via: items.length > 1 ? 'bulk' : 'individual', created_at: now(), invalidated_at: null, invalidation_reason: null });
           await ctx.db.audit(ctx.ws, d.campaign_id, 'draft.approved', `Email to ${l.first_name} ${l.last_name} approved (revision ${r.rev})`, { draft_id: d.id, revision_id: r.id }, ctx.user?.id);
         }
-        onApproved?.(d, r, l);
+        await onApproved?.(d, r, l);
         return { draft_id, status: 'approved', revision_id: r.id };
       });
     } catch (e) {

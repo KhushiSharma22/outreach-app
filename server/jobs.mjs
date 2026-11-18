@@ -4,8 +4,9 @@
 import { id, now } from './db.mjs';
 import { json, localView } from './lib.mjs';
 import { executeDiscovery, failRun, startDiscovery } from './sourcing.mjs';
-import { executeDraftRun, startDraftRun } from './drafts.mjs';
-import { dispatchApproved } from './delivery.mjs';
+import { executeDraftRun, startDraftRun, approveDrafts } from './drafts.mjs';
+import { dispatchApproved, onDraftApproved } from './delivery.mjs';
+import { loadCampaign } from './campaigns.mjs';
 import { planFollowups } from './sequences.mjs';
 
 const STALE_MS = () => +(process.env.JOB_STALE_MS || 15 * 60e3); // a running job older than this was cut off
@@ -92,13 +93,20 @@ export function registerHandlers(jobs, db, ctxFor) {
     const r = await db.get('SELECT campaign_id FROM discovery_runs WHERE id=?', [run_id]);
     await db.audit(job.workspace_id, r?.campaign_id, 'discovery.failed', 'Discovery failed; you can retry it', { error: msg });
   });
-  jobs.on('drafts', async (payload, job) => { await executeDraftRun(ctxFor(job.workspace_id), payload); },
+  jobs.on('drafts', async (payload, job) => {
+    const ctx = ctxFor(job.workspace_id);
+    await executeDraftRun(ctx, payload);
+    const c = await loadCampaign(ctx, payload.campaign_id);
+    if (c.status !== 'active' || c.config.delivery !== 'smtp' || c.config.approval !== 'rules') return;
+    const rows = await db.all(`SELECT d.id draft_id,r.id revision_id FROM drafts d JOIN draft_revisions r ON r.id=d.current_revision_id JOIN campaign_leads l ON l.id=d.lead_id WHERE d.campaign_id=? AND l.selected=1 AND l.decision='qualified' AND r.origin='generated' AND r.review_note IS NULL AND r.config_version=? AND r.context_version_id=? AND NOT EXISTS (SELECT 1 FROM send_tasks st WHERE st.lead_id=l.id AND st.kind='initial') AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.revision_id=r.id)`, [c.id,c.config_version,c.context_version_id]);
+    if (rows.length) await approveDrafts(ctx, {items:rows,confirm:true}, onDraftApproved(ctx));
+  },
     async (payload, job, msg) => await db.audit(job.workspace_id, payload.campaign_id, 'drafts.failed', 'Email drafting failed; retry from Email studio', { error: msg }));
 }
 
 // Creates at most one discovery occurrence per campaign per local day, only for today (no backlog
 // after downtime), and plans due follow-ups.
-export async function runScheduler(db, ctxFor, at = Date.now()) {
+export async function runScheduler(db, ctxFor, at = Date.now(), send) {
   await db.run("UPDATE send_tasks SET status='unknown',status_reason='Worker stopped during sending. Check mailbox before retrying.',updated_at=? WHERE status='sending' AND updated_at<?",[new Date(at).toISOString(),new Date(at-15*60e3).toISOString()]);
   for (const c of await db.all("SELECT c.id, c.workspace_id, v.data FROM campaigns c JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE c.status='active'")) {
     const ctx = ctxFor(c.workspace_id), s = json(c.data).schedule;
@@ -111,6 +119,6 @@ export async function runScheduler(db, ctxFor, at = Date.now()) {
     } catch (e) {
       await db.audit(c.workspace_id, c.id, 'scheduler.error', 'Scheduled work could not be created', { error: String(e.message) });
     }
-    await dispatchApproved(ctx,c.id,at);
+    await dispatchApproved(ctx,c.id,at,send);
   }
 }

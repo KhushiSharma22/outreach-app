@@ -28,7 +28,8 @@ export async function blockers(ctx, c) {
   }
   const se = scheduleErrors(cfg.schedule);
   if (se.length) out.push({ code: 'schedule', message: 'Choose a valid schedule. ' + se.join(' ') });
-  if (cfg.approval !== 'daily') out.push({ code: 'approval_mode', message: 'Pre-approved rules mode is unavailable.' });
+  if (!['daily','rules'].includes(cfg.approval)) out.push({ code: 'approval_mode', message: 'Choose an approval mode.' });
+  if (cfg.approval === 'rules' && cfg.delivery !== 'smtp') out.push({ code: 'approval_mode', message: 'Automatic approval requires scheduled SMTP delivery.' });
   if ((await ctx.db.get('SELECT sending_stopped FROM workspaces WHERE id=?', [ctx.ws])).sending_stopped) out.push({ code: 'sending_stopped', message: 'Sending is stopped for this workspace.' });
   return out;
 }
@@ -64,9 +65,10 @@ export function onDraftApproved(ctx) {
   };
 }
 
-export async function launch(ctx, campaignId, { revision }) {
+export async function launch(ctx, campaignId, { revision, authorize_automatic = false }) {
   const c = await loadCampaign(ctx, campaignId);
   if (c.status !== 'draft') return { campaign: c, created: 0, already: true };
+  if (c.config.approval === 'rules' && authorize_automatic !== true) throw invalid('Confirm automatic approval and scheduled SMTP delivery.');
   if (revision !== c.revision) throw conflict('stale_revision', 'This campaign changed since you reviewed it. Review the launch summary again.', { revision: c.revision });
   const b = await blockers(ctx, c);
   if (b.length) throw Object.assign(invalid(b.map(x => x.message).join(' ')), { fields: { blockers: b } });
