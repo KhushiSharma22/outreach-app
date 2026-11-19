@@ -106,11 +106,11 @@ export async function loadCampaign(ctx, campaignId) {
   return c;
 }
 export async function listCampaigns(ctx) {
-  return await Promise.all((await ctx.db.all(`SELECT c.*, (SELECT count(*) FROM campaign_leads l WHERE l.campaign_id=c.id AND l.selected=1) selected_count,
+  const rows = await ctx.db.all(`SELECT c.*, v.data config_data, (SELECT count(*) FROM campaign_leads l WHERE l.campaign_id=c.id AND l.selected=1) selected_count,
       (SELECT count(*) FROM messages m WHERE m.campaign_id=c.id) sent_count,
       (SELECT count(*) FROM conversation_events e WHERE e.campaign_id=c.id AND e.type='reply') reply_count
-    FROM campaigns c WHERE c.workspace_id=? ORDER BY c.created_at DESC`, [ctx.ws]))
-    .map(async c => ({ ...c, config: await configRow(ctx, c.id, c.config_version) })));
+    FROM campaigns c JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE c.workspace_id=? ORDER BY c.created_at DESC`, [ctx.ws]);
+  return rows.map(({config_data,...c}) => ({...c,config:json(config_data)}));
 }
 export async function createCampaign(ctx, { name, prompt = '', brief, source } = {}) {
   const context = await currentContext(ctx);

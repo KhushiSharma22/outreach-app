@@ -99,7 +99,7 @@ async function loadClaude(required) {
   let Anthropic;
   try { ({ default: Anthropic } = await import('@anthropic-ai/sdk')); }
   catch { if (required) throw new Error('AI_PROVIDER=claude but @anthropic-ai/sdk is not installed. Run npm install.'); return null; }
-  const client = new Anthropic();
+  const client = new Anthropic({ timeout: 45000, maxRetries: 0 });
   const model = process.env.ANTHROPIC_MODEL || 'claude-opus-5-5';
   return llmProvider({
     name: 'claude', model,

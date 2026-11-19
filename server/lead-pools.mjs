@@ -45,8 +45,8 @@ async function candidates(ctx,c,source,day){
  AND NOT EXISTS(SELECT 1 FROM campaign_leads l WHERE l.campaign_id=p.campaign_id AND l.contact_id=p.contact_id)
  ORDER BY p.available_on,p.created_at,ct.id LIMIT 5000`,[c.id,ctx.ws,c.id,source,day]);
 }
-export async function assessPrepared(ctx,c,cand,evidence,score=null){
- if(score===null){const approved=await ctx.db.get('SELECT score FROM research_approvals WHERE workspace_id=? AND campaign_id=? AND contact_id=?',[ctx.ws,c.id,cand.id]);score=approved?.score??null;}
+export async function assessPrepared(ctx,c,cand,evidence,score=null,preloaded=false){
+ if(score===null&&!preloaded){const approved=await ctx.db.get('SELECT score FROM research_approvals WHERE workspace_id=? AND campaign_id=? AND contact_id=?',[ctx.ws,c.id,cand.id]);score=approved?.score??null;}
  const result=checkCandidate(ctx,{...c.config,requireVerifiedEmail:true,...(score!==null?{quality:0}:{})},c.context.data,cand,evidence,localView(Date.now(),c.config.schedule.timezone||'UTC').date);
  if(score!==null){result.score=score;if(result.decision==='qualified'&&score<c.config.quality)result.decision='review';result.rationale='Admin quality score: '+score+'/100. '+result.rationale;}
  return result;
@@ -55,6 +55,16 @@ async function assessed(ctx,c,cand,score=null){
  const evidence=await ctx.db.all('SELECT * FROM evidence WHERE workspace_id=? AND (contact_id=? OR (company_id=? AND contact_id IS NULL))',[ctx.ws,cand.id,cand.company_id]);
  // Research lists must have verified email even if the user relaxes that requirement for uploads.
  return assessPrepared(ctx,c,cand,evidence,score);
+}
+// Load shared evidence and admin scores once for a campaign instead of querying per candidate.
+async function assessCandidates(ctx,c,list){
+ if(!list.length)return new Map();
+ const scores=await ctx.db.all('SELECT contact_id,score FROM research_approvals WHERE workspace_id=? AND campaign_id=?',[ctx.ws,c.id]);
+ const evidence=await ctx.db.all(`SELECT p.contact_id pool_contact_id,e.* FROM campaign_contact_pool p JOIN contacts ct ON ct.id=p.contact_id AND ct.workspace_id=p.workspace_id JOIN evidence e ON e.workspace_id=ct.workspace_id AND (e.contact_id=ct.id OR (e.company_id=ct.company_id AND e.contact_id IS NULL)) WHERE p.workspace_id=? AND p.campaign_id=? AND p.source='research'`,[ctx.ws,c.id]);
+ const byScore=new Map(scores.map(x=>[x.contact_id,x.score])),byEvidence=new Map();
+ for(const e of evidence){const {pool_contact_id,...item}=e;const entries=byEvidence.get(pool_contact_id)||[];entries.push(item);byEvidence.set(pool_contact_id,entries);}
+ const out=new Map();for(const cand of list)out.set(cand.id,await assessPrepared(ctx,c,cand,byEvidence.get(cand.id)||[],byScore.get(cand.id)??null,true));
+ return out;
 }
 // Trusted CLI and super-admin endpoint only. Customer routes cannot seed research.
 export async function seedResearch(ctx,campaignId,{csv,filename='Research list',available_on=now().slice(0,10)}){
@@ -80,8 +90,8 @@ export async function seedResearch(ctx,campaignId,{csv,filename='Research list',
 export async function sourceStatus(ctx,campaignId){
  const c=await loadCampaign(ctx,campaignId),day=now().slice(0,10);
  const allocation=await ctx.db.get('SELECT * FROM research_days WHERE workspace_id=? AND day=?',[ctx.ws,day]);
- const list=await candidates(ctx,c,'research',day);let ready=0;
- for(const cand of list)if((await assessed(ctx,c,cand)).decision==='qualified')ready++;
+ const list=await candidates(ctx,c,'research',day),assessments=await assessCandidates(ctx,c,list);let ready=0;
+ for(const cand of list)if(assessments.get(cand.id).decision==='qualified')ready++;
  return {research_ready:ready,uploaded_ready:(await candidates(ctx,c,'upload',day)).length,daily_remaining:Math.max(0,Math.min(30,c.config.target)-(allocation?.allocated||0)),other_campaign_today:!!allocation&&allocation.campaign_id!==c.id};
 }
 export async function startCampaignDiscovery(ctx,c,{trigger='manual',occurrenceDate=null}={}){
@@ -100,9 +110,9 @@ export async function startCampaignDiscovery(ctx,c,{trigger='manual',occurrenceD
  if(research&&!today&&days.filter(d=>d.day>=weekStart.toISOString().slice(0,10)).length>=5)throw conflict('pilot_complete','You have used your five research days this week. Research is available again next week (UTC).');
  const target=Math.min(30,c.config.target),remaining=research?target-(today?.allocated||0):target;
  if(remaining<=0)throw conflict('daily_limit','This campaign has received its daily research target. More leads can be requested tomorrow (UTC).');
- const selected=[];
- for(const cand of await candidates(ctx,c,c.config.source,day)){
- if(research&&(await assessed(ctx,c,cand)).decision!=='qualified')continue;
+ const selected=[],list=await candidates(ctx,c,c.config.source,day),assessments=research?await assessCandidates(ctx,c,list):null;
+ for(const cand of list){
+ if(research&&assessments.get(cand.id).decision!=='qualified')continue;
  selected.push(cand);if(selected.length>=remaining)break;
  }
  if(!selected.length)throw conflict('no_new_contacts',research?'No new leads match your campaign yet. Check back later or import your own contacts.':'Upload new contacts for this campaign to continue.');

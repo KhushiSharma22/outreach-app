@@ -6,7 +6,7 @@ import {createCampaign,updateCampaign} from '../server/campaigns.mjs';
 import {seedResearch} from '../server/lead-pools.mjs';
 import {startDiscovery,executeDiscovery} from '../server/sourcing.mjs';
 import {executeDraftRun,approveDrafts,listDrafts} from '../server/drafts.mjs';
-import {launch,smtpSend,dispatchApproved,scheduledDue,addSuppression,removeSuppression} from '../server/delivery.mjs';
+import {launch,smtpSend,dispatchApproved,scheduledDue,addSuppression,removeSuppression,listTasks,confirmSent} from '../server/delivery.mjs';
 const csv='first_name,last_name,email,company,role,email_status,quality_score\nAlex,One,one@example.com,One,Founder,valid,97\nAlex,Two,two@example.com,Two,Founder,valid,96';
 async function setup(fn){const db=await openDb({file:':memory:'});process.env.AI_PROVIDER='offline';try{const {workspace,user}=await seedWorkspace(db);await fn({db,ws:workspace.id,user,publicUrl:'https://app.example.com',jobs:{enqueue:async()=>{}}});}finally{await db.close()}}
 test('scheduled time respects selected days, timezone and earliest send time',()=>{
@@ -24,6 +24,8 @@ test('admin scores persist; approved tasks schedule automatically and opt-outs c
  await ctx.db.insert('mailboxes',{workspace_id:ctx.ws,sender:ctx.user.email,postal_address:'123 Test Street',credentials:'test only',updated_at:new Date().toISOString()});
  await launch(ctx,c.id,{revision:c.revision});
  const tasks=await ctx.db.all('SELECT * FROM send_tasks');assert.equal(tasks.length,2);
+ const queue=await listTasks(ctx,{campaign_id:c.id});assert.ok(queue.items.every(t=>t.delivery==='smtp'));
+ await assert.rejects(confirmSent(ctx,tasks[0].id),e=>e.code==='automatic_delivery');
  const calls=[];await dispatchApproved(ctx,c.id,Date.now(),async(_ctx,id,url,options)=>{calls.push({id,url,options});});assert.equal(calls.length,2);assert.equal(calls[0].options.automatic,true);
  // Suppression is persisted by normalized email and cancels every pending campaign task for it.
  const sup=await addSuppression(ctx,{email:' ONE@example.com ',reason:'opt_out'});

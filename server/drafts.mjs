@@ -95,14 +95,16 @@ export async function startDraftRun(ctx, campaignId, { regenerate = false } = {}
   if (open && !regenerate) return open;
   return await ctx.jobs.enqueue(ctx.ws, 'drafts', { campaign_id: c.id, regenerate: regenerate === 'all' ? 'all' : !!regenerate });
 }
-export async function executeDraftRun(ctx, { campaign_id, regenerate }) {
+export async function executeDraftRun(ctx, { campaign_id, regenerate, batch_limit = 0, after_lead_id = null }) {
   const c = await loadCampaign(ctx, campaign_id);
-  const leads = await ctx.db.all(`${LEAD_SELECT} WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified' AND c.workspace_id=?`, [c.id, ctx.ws]);
-  let made = 0, flagged = 0;
+  const leads = await ctx.db.all(`${LEAD_SELECT} WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified' AND c.workspace_id=? ORDER BY l.id`, [c.id, ctx.ws]);
+  let made = 0, flagged = 0, remaining = false, lastLeadId = after_lead_id;
   for (const l of leads) {
+    if (after_lead_id && l.id <= after_lead_id) continue;
     if (l.send_status === 'sent') continue;
     const fresh = await ctx.db.get('SELECT d.current_revision_id, r.config_version, r.context_version_id FROM drafts d LEFT JOIN draft_revisions r ON r.id=d.current_revision_id WHERE d.lead_id=?', [l.id]);
     if (fresh?.current_revision_id && !(regenerate && (fresh.config_version !== c.config_version || fresh.context_version_id !== c.context_version_id || regenerate === 'all'))) continue;
+    if (batch_limit && made >= batch_limit) { remaining = true; break; }
     const lead = await shapeLead(ctx, l), evidence = lead.evidence;
     let { out, provider, model, degraded } = await runAi(ctx.db, ctx.ws, 'draft', p => p.draftEmail({ context: c.context.data, config: c.config, lead, evidence }));
     let problems = checkDraft(out, evidence, c.context.data.signature, [c.config.offer, c.context.data.proof]);
@@ -114,10 +116,10 @@ export async function executeDraftRun(ctx, { campaign_id, regenerate }) {
     }
     if (note) flagged++;
     await saveRevision(ctx, c, l, { subject: out.subject.trim(), body: out.body.trim(), origin: fresh?.current_revision_id ? 'regenerated' : 'generated', generator: { provider, model }, evidence_ids: (out.evidence_ids || []).filter(x => evidence.some(e => e.id === x)), review_note: note });
-    made++;
+    made++; lastLeadId = l.id;
   }
   await ctx.db.audit(ctx.ws, c.id, 'drafts.generated', `${made} email draft${made === 1 ? '' : 's'} prepared${flagged ? `, ${flagged} flagged for review` : ''}`, { made, flagged });
-  return { made, flagged };
+  return { made, flagged, remaining, lastLeadId };
 }
 async function saveRevision(ctx, c, lead, { subject, body, origin, generator, evidence_ids, review_note }) {
   return await ctx.db.tx(async () => {
@@ -140,10 +142,19 @@ async function shapeDraft(ctx, d) {
   return { id: d.id, lead_id: d.lead_id, revision_id: r.id, rev: r.rev, subject: r.subject, body: r.body, origin: r.origin, generator: json(r.generator), evidence_ids: json(r.evidence_ids), review_note: r.review_note, approved: !!appr, approved_at: appr?.created_at || null, stale: r.config_version !== c.config_version || r.context_version_id !== c.context_version_id, created_at: r.created_at };
 }
 export async function listDrafts(ctx, campaignId) {
-  await loadCampaign(ctx, campaignId);
+  const c = await loadCampaign(ctx, campaignId);
   const leads = await ctx.db.all(`${LEAD_SELECT} WHERE l.campaign_id=? AND l.selected=1 AND c.workspace_id=? ORDER BY l.score DESC, l.id`, [campaignId, ctx.ws]);
-  const items = await Promise.all(leads.map(async l => ({ lead: await shapeLead(ctx, l), draft: l.draft_id && l.current_revision_id ? await shapeDraft(ctx, await ctx.db.get('SELECT * FROM drafts WHERE id=?', [l.draft_id])) : null })));
-  const pending = await ctx.db.get("SELECT status, last_error FROM jobs WHERE workspace_id=? AND type='drafts' AND campaign_id=? ORDER BY created_at DESC LIMIT 1", [ctx.ws, campaignId]);
+  const revisions = await ctx.db.all(`SELECT d.id draft_id, d.lead_id, r.*, a.created_at approved_at FROM drafts d JOIN draft_revisions r ON r.id=d.current_revision_id LEFT JOIN approvals a ON a.id=(SELECT a2.id FROM approvals a2 WHERE a2.draft_id=d.id AND a2.revision_id=r.id AND a2.invalidated_at IS NULL AND a2.hash=r.hash ORDER BY a2.created_at DESC LIMIT 1) WHERE d.campaign_id=?`, [campaignId]);
+  const evidence = await ctx.db.all(`SELECT l.id lead_id,e.id,e.signal,e.fact,e.source_url,e.event_date,e.collected_at,e.provenance FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id JOIN evidence e ON e.workspace_id=ct.workspace_id AND (e.contact_id=ct.id OR (e.company_id=ct.company_id AND e.contact_id IS NULL)) WHERE l.campaign_id=? AND l.selected=1 AND ct.workspace_id=? ORDER BY e.collected_at DESC`, [campaignId,ctx.ws]);
+  const byLead = new Map(); for (const e of evidence) {const {lead_id,...item}=e;const list=byLead.get(lead_id)||[];if(list.length<20)list.push(item);byLead.set(lead_id,list);}
+  const byDraft = new Map(revisions.map(r=>[r.draft_id,r]));
+  const items = await Promise.all(leads.map(async l => {
+    const lead=await shapeLead(ctx,l,false);lead.evidence=byLead.get(l.id)||[];
+    const r=byDraft.get(l.draft_id);
+    const draft=r?{id:r.draft_id,lead_id:r.lead_id,revision_id:r.id,rev:r.rev,subject:r.subject,body:r.body,origin:r.origin,generator:json(r.generator),evidence_ids:json(r.evidence_ids),review_note:r.review_note,approved:!!r.approved_at,approved_at:r.approved_at||null,stale:r.config_version!==c.config_version||r.context_version_id!==c.context_version_id,created_at:r.created_at}:null;
+    return {lead,draft};
+  }));
+  const pending = await ctx.db.get("SELECT status, last_error FROM jobs WHERE workspace_id=? AND type='drafts' AND campaign_id=? ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END, created_at DESC LIMIT 1", [ctx.ws, campaignId]);
   return { items, total: items.length, approved: items.filter(x => x.draft?.approved).length, job: pending || null };
 }
 async function loadDraft(ctx, draftId) {
@@ -184,7 +195,7 @@ export async function rewriteDraft(ctx, draftId, { revision_id, style }) {
 export async function approveDrafts(ctx, { items, confirm }, onApproved) {
   if (!Array.isArray(items) || !items.length) throw invalid('Choose the drafts to approve.');
   if (items.length > 1 && confirm !== true) throw invalid('Confirm you reviewed these drafts.', { confirm: 'Required.' });
-  return await Promise.all(items.map(async ({ draft_id, revision_id }) => {
+  const approveOne = async ({ draft_id, revision_id }) => {
     try {
       return await ctx.db.tx(async () => {
         const d = await loadDraft(ctx, draft_id);
@@ -207,7 +218,10 @@ export async function approveDrafts(ctx, { items, confirm }, onApproved) {
       if (e instanceof AppError) return { draft_id, status: 'rejected', code: e.code, message: e.message };
       throw e;
     }
-  }));
+  };
+  const results = [];
+  for (const item of items) results.push(await approveOne(item));
+  return results;
 }
 export async function validApproval(ctx, draftRevisionId) {
   return !!await ctx.db.get('SELECT 1 FROM approvals a JOIN drafts d ON d.id=a.draft_id JOIN draft_revisions r ON r.id=a.revision_id WHERE a.revision_id=? AND d.current_revision_id=a.revision_id AND a.invalidated_at IS NULL AND a.hash=r.hash', [draftRevisionId]);

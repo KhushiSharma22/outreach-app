@@ -13,12 +13,12 @@ export async function blockers(ctx, c) {
   const out = [], cfg = c.config;
   if (!c.name.trim() || !cfg.offer.trim()) out.push({ code: 'brief', message: 'Complete your campaign brief.' });
   if (!cfg.filters.roles.length && !cfg.filters.industries.length) out.push({ code: 'audience', message: 'Choose at least one job role or industry.' });
-  const sel = await ctx.db.all(`SELECT l.id, ct.email, s.reason suppressed, d.current_revision_id FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id
+  const sel = await ctx.db.all(`SELECT l.id, ct.email, s.reason suppressed, d.current_revision_id,
+    EXISTS (SELECT 1 FROM approvals a JOIN draft_revisions r ON r.id=a.revision_id WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL AND a.hash=r.hash) approved FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id
     LEFT JOIN suppressions s ON s.workspace_id=ct.workspace_id AND s.email=ct.email LEFT JOIN drafts d ON d.lead_id=l.id
     WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified'`, [c.id]);
   if (!sel.length) out.push({ code: 'leads', message: 'Select at least one qualified prospect.' });
-  let unapproved = 0;
-  for (const l of sel) if (!l.current_revision_id || !await validApproval(ctx, l.current_revision_id)) unapproved++;
+  const unapproved = sel.filter(l => !l.current_revision_id || !l.approved).length;
   if (unapproved) out.push({ code: 'approvals', message: `Approve every email (${unapproved} still need approval).` });
   const bad = sel.filter(l => !l.email || !EMAIL_RE.test(l.email) || l.suppressed).length;
   if (bad) out.push({ code: 'recipients', message: `${bad} selected recipient${bad > 1 ? 's are' : ' is'} missing a usable email or suppressed.` });
@@ -118,14 +118,14 @@ function blockedReason(t) {
   if (t.kind === 'followup' && t.enrollment_status !== 'active') return 'Follow-ups stopped for this recipient.';
   return null;
 }
-const TASK_SELECT = `SELECT st.*, c.name campaign_name, c.status campaign_status, w.sending_stopped, ct.first_name, ct.last_name, ct.email_status, co.name company,
+const TASK_SELECT = `SELECT st.*, c.name campaign_name, c.status campaign_status, cv.data campaign_config, w.sending_stopped, ct.first_name, ct.last_name, ct.email_status, co.name company,
   s.reason suppressed, e.status enrollment_status, sq.status sequence_status, v.steps sequence_steps, m.sent_at, m.proof
-  FROM send_tasks st JOIN campaigns c ON c.id=st.campaign_id JOIN workspaces w ON w.id=st.workspace_id JOIN contacts ct ON ct.id=st.contact_id JOIN companies co ON co.id=ct.company_id
+  FROM send_tasks st JOIN campaigns c ON c.id=st.campaign_id JOIN campaign_config_versions cv ON cv.campaign_id=c.id AND cv.version=c.config_version JOIN workspaces w ON w.id=st.workspace_id JOIN contacts ct ON ct.id=st.contact_id JOIN companies co ON co.id=ct.company_id
   LEFT JOIN suppressions s ON s.workspace_id=st.workspace_id AND s.email=st.to_email LEFT JOIN enrollments e ON e.id=st.enrollment_id
   LEFT JOIN sequences sq ON sq.id=e.sequence_id LEFT JOIN sequence_versions v ON v.id=e.sequence_version_id LEFT JOIN messages m ON m.send_task_id=st.id`;
 function shapeTask(t) {
   const blocked = blockedReason(t);
-  return { id: t.id, campaign_id: t.campaign_id, campaign_name: t.campaign_name, lead_id: t.lead_id, contact_id: t.contact_id, kind: t.kind, step_index: t.step_index, day: t.sequence_steps && t.step_index != null ? JSON.parse(t.sequence_steps)[t.step_index]?.day : null,
+  return { id: t.id, campaign_id: t.campaign_id, campaign_name: t.campaign_name, delivery: JSON.parse(t.campaign_config).delivery || 'manual', lead_id: t.lead_id, contact_id: t.contact_id, kind: t.kind, step_index: t.step_index, day: t.sequence_steps && t.step_index != null ? JSON.parse(t.sequence_steps)[t.step_index]?.day : null,
     recipient: `${t.first_name} ${t.last_name}`.trim(), company: t.company, to_email: t.to_email, subject: t.subject, body: t.body, due_at: t.due_at,
     status: t.status, status_reason: t.status_reason, blocked_reason: blocked, due: t.status === 'pending' && !blocked && Date.parse(t.due_at) <= Date.now(),
     sent_at: t.sent_at, proof: t.proof, confirmed_by: t.confirmed_by };
@@ -148,6 +148,7 @@ async function loadTask(ctx, taskId) {
 }
 export async function confirmSent(ctx, taskId, { sent_at } = {}) {
   const t = await loadTask(ctx, taskId);
+  if (t.kind === 'initial' && JSON.parse(t.campaign_config).delivery === 'smtp') throw conflict('automatic_delivery', 'This campaign sends initial emails through scheduled SMTP.');
   if (t.status === 'sent') return shapeTask(t); // idempotent
   if (t.status === 'held') throw conflict('held', 'Review and release this overdue follow-up before sending it.');
   if (t.status !== 'pending') throw conflict('not_pending', `This task is ${t.status}${t.status_reason ? ': ' + t.status_reason : ''}.`);

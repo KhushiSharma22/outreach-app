@@ -11,7 +11,7 @@ export const getApp = () => (appPromise ??= createApp({ workers: false, serverle
 export const waitUntil = p => globalThis[Symbol.for('@vercel/request-context')]?.get?.()?.waitUntil?.(p);
 
 const SCHEDULE_EVERY_MS = 60e3;
-let lastSchedule = 0;
+let lastSchedule = 0, background = null, pendingKick = false, pendingSchedule = false;
 const logBackground = e => console.error(JSON.stringify({ t: new Date().toISOString(), event: 'background_error', error: String(e?.stack || e) }));
 
 export function restorePath(req) {
@@ -38,8 +38,17 @@ export default async function handler(req, res) {
   await finished;
   // Discovery and drafting queued by this request run after the response; the daily scheduler is also
   // checked here (at most once a minute per instance) so schedules don't depend on the cron alone.
-  const work = [];
-  if (app.jobs.takeKick()) work.push(app.jobs.runDue());
-  if (Date.now() - lastSchedule > SCHEDULE_EVERY_MS) { lastSchedule = Date.now(); work.push(app.scheduler().then(() => app.jobs.runDue())); }
-  if (work.length) waitUntil(Promise.all(work).catch(logBackground));
+  const kicked = app.jobs.takeKick();
+  pendingKick ||= kicked;
+  if (Date.now() - lastSchedule > SCHEDULE_EVERY_MS) { lastSchedule = Date.now(); pendingSchedule = true; }
+  if ((pendingKick || pendingSchedule) && !background) {
+    background = (async () => {
+      while (pendingKick || pendingSchedule) {
+        const schedule = pendingSchedule; pendingKick = false; pendingSchedule = false;
+        if (schedule) { try { await app.scheduler(); } catch (e) { logBackground(e); } }
+        await app.jobs.runDue();
+      }
+    })().catch(logBackground).finally(() => { background = null; });
+  }
+  if (background) waitUntil(background);
 }

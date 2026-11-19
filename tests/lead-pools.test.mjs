@@ -74,3 +74,20 @@ test('prepared discovery does not call AI; general company research reaches emai
  const shaped=await shapeLead(ctx,await getLead(ctx,l.id));
  assert.ok(shaped.evidence.some(e=>e.fact==='Offers refillable skincare packaging'));
 }));
+
+test('research availability keeps a fixed number of database reads as the pool grows',()=>setup(async(ctx,make)=>{
+ const campaign=await make();
+ await seedResearch(ctx,campaign.id,{csv:csv(2)});
+ const originalGet=ctx.db.get, originalAll=ctx.db.all;let reads=0;
+ ctx.db.get=async (...args)=>{reads++;return originalGet(...args)};
+ ctx.db.all=async (...args)=>{reads++;return originalAll(...args)};
+ try {
+  assert.equal((await sourceStatus(ctx,campaign.id)).research_ready,2);const smallReads=reads;
+  ctx.db.get=originalGet;ctx.db.all=originalAll;
+  await seedResearch(ctx,campaign.id,{csv:csv(58,100)});
+  ctx.db.get=async (...args)=>{reads++;return originalGet(...args)};
+  ctx.db.all=async (...args)=>{reads++;return originalAll(...args)};
+  reads=0;assert.equal((await sourceStatus(ctx,campaign.id)).research_ready,60);
+  assert.equal(reads,smallReads);
+ } finally {ctx.db.get=originalGet;ctx.db.all=originalAll;}
+}));

@@ -9,7 +9,7 @@ import { dispatchApproved, onDraftApproved } from './delivery.mjs';
 import { loadCampaign } from './campaigns.mjs';
 import { planFollowups } from './sequences.mjs';
 
-const STALE_MS = () => +(process.env.JOB_STALE_MS || 15 * 60e3); // a running job older than this was cut off
+const STALE_MS = () => +(process.env.JOB_STALE_MS || (process.env.VERCEL ? 6 * 60e3 : 15 * 60e3)); // a running job older than this was cut off
 
 export function createJobs(db, log = () => {}, { serverless = false } = {}) {
   const handlers = {}, running = new Set(), inflight = new Set();
@@ -29,7 +29,7 @@ export function createJobs(db, log = () => {}, { serverless = false } = {}) {
     async tick() {
       // Requeue jobs whose worker died (crash, or a serverless function hitting its time limit).
       await db.run("UPDATE jobs SET status='queued', locked_at=NULL WHERE status='running' AND locked_at<?", [new Date(Date.now() - STALE_MS()).toISOString()]);
-      const due = await db.all("SELECT * FROM jobs WHERE status='queued' AND run_at<=? ORDER BY run_at LIMIT 4", [now()]);
+      const due = await db.all("SELECT * FROM jobs WHERE status='queued' AND run_at<=? ORDER BY run_at LIMIT 2", [now()]);
       const batch = Promise.all(due.filter(j => !running.has(j.id)).map(async j => {
         if (!(await db.run("UPDATE jobs SET status='running', attempts=attempts+1, locked_at=? WHERE id=? AND status='queued'", [now(), j.id])).changes) return;
         running.add(j.id);
@@ -95,7 +95,8 @@ export function registerHandlers(jobs, db, ctxFor) {
   });
   jobs.on('drafts', async (payload, job) => {
     const ctx = ctxFor(job.workspace_id);
-    await executeDraftRun(ctx, payload);
+    const result = await executeDraftRun(ctx, {...payload, batch_limit:4});
+    if (result.remaining) await jobs.enqueue(job.workspace_id, 'drafts', {...payload, after_lead_id:result.lastLeadId}, {dedupe:'draft-continuation:'+job.id});
     const c = await loadCampaign(ctx, payload.campaign_id);
     if (c.status !== 'active' || c.config.delivery !== 'smtp' || c.config.approval !== 'rules') return;
     const rows = await db.all(`SELECT d.id draft_id,r.id revision_id FROM drafts d JOIN draft_revisions r ON r.id=d.current_revision_id JOIN campaign_leads l ON l.id=d.lead_id WHERE d.campaign_id=? AND l.selected=1 AND l.decision='qualified' AND r.origin='generated' AND r.review_note IS NULL AND r.config_version=? AND r.context_version_id=? AND NOT EXISTS (SELECT 1 FROM send_tasks st WHERE st.lead_id=l.id AND st.kind='initial') AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.revision_id=r.id)`, [c.id,c.config_version,c.context_version_id]);
