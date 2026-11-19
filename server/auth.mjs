@@ -3,7 +3,7 @@
 import { scrypt, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { id, now, hash } from './db.mjs';
 import { AppError, invalid, conflict, notFound, EMAIL_RE, normEmail, json } from './lib.mjs';
-import { DEFAULT_CONTEXT } from './campaigns.mjs';
+import { newWorkspaceContext } from './campaigns.mjs';
 import { sendMail } from './mailer.mjs';
 import { isApproved, requireApproved, isSuperAdmin, isOperator } from './admin.mjs';
 
@@ -94,7 +94,7 @@ async function createUser(db, { name, email, password_hash = null, verified = fa
     await db.insert('users', user);
     if (!invite) {
       await db.insert('account_context_versions', { id: id(), workspace_id: ws.id, version: 1, created_by: userId, created_at: t,
-        data: JSON.stringify({ ...DEFAULT_CONTEXT, company: ws.name, website: '', offering: '', icp: '', proof: '', sender: name.split(' ')[0], email, signature: `${name}\n${ws.name}` }) });
+        data: JSON.stringify(newWorkspaceContext({company:ws.name,name,email})) });
     }
     await db.insert('memberships', { workspace_id: user.workspace_id, user_id: userId, role: user.role, invited_by: invite?.created_by || null, created_at: t });
     if (invite) await db.audit(invite.workspace_id, null, 'member.joined', `${name} joined the workspace`, {}, userId);

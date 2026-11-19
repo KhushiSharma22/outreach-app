@@ -41,3 +41,17 @@ test('admin scores persist; approved tasks schedule automatically and opt-outs c
  await dispatchApproved(ctx,c.id,Date.now(),async(...args)=>smtpSend(...args,fake));assert.equal(sent.length,1);
 
 }));
+
+test('per-day times and late approvals use the correct local day', async()=>{
+ const {scheduleErrors,normalizeConfig,defaultConfig}=await import('../server/campaigns.mjs');
+ const {followupDue}=await import('../server/sequences.mjs');
+ const schedule={days:['Mon','Tue'],time:'09:00',times:{Mon:'10:00',Tue:'15:00'},timezone:'America/New_York'};
+ const c={schedule};
+ assert.equal(scheduledDue(c,Date.parse('2026-11-16T13:00:00Z')),'2026-11-16T15:00:00.000Z');
+ assert.equal(scheduledDue(c,Date.parse('2026-11-16T17:00:00Z')),'2026-11-16T17:00:00.000Z');
+ assert.equal(scheduledDue(c,Date.parse('2026-11-17T16:00:00Z')),'2026-11-17T20:00:00.000Z');
+ assert.equal(followupDue('2026-11-16T15:00:00Z',1,schedule),'2026-11-17T20:00:00.000Z');
+ assert.ok(scheduleErrors({...schedule,times:{Mon:'99:00'}}).length);
+ const base=defaultConfig({offering:'',tone:'Warm'});
+ assert.equal(normalizeConfig(base,{schedule}).schedule.times.Tue,'15:00');
+});

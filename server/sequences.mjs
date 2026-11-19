@@ -3,7 +3,7 @@
 // step executions (send tasks, unique per enrollment and step).
 import { id, now, hash } from './db.mjs';
 import { notFound, conflict, invalid, json, localView, addDays, weekdayOf, zonedToUtc } from './lib.mjs';
-import { loadCampaign } from './campaigns.mjs';
+import { loadCampaign, scheduleTime } from './campaigns.mjs';
 
 export const MERGE_FIELDS = ['first_name', 'company'];
 const TITLES = ['Gentle reminder', 'Add value', 'Find the right moment', 'Close the loop'];
@@ -197,7 +197,7 @@ export async function advanceEnrollment(ctx, enrollmentId, stepIndex) {
 export function followupDue(anchorIso, day, schedule) {
   let date = addDays(localView(Date.parse(anchorIso), schedule.timezone).date, day);
   for (let i = 0; i < 7 && !schedule.days.includes(weekdayOf(date)); i++) date = addDays(date, 1);
-  return zonedToUtc(date, schedule.time, schedule.timezone);
+  return zonedToUtc(date, scheduleTime(schedule, weekdayOf(date)), schedule.timezone);
 }
 // Creates the next due step for every active enrollment. Unique (enrollment, step) prevents duplicates.
 export async function planFollowups(ctx, campaignId) {

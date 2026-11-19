@@ -199,6 +199,15 @@ export async function runAi(db, workspaceId, operation, fn) {
 }
 
 // Post-generation guard: drafts may not assert signal facts that their evidence does not support.
+// FTP's training and tournament access are opportunities, not guaranteed inclusions.
+export function checkFtpDraft(draft, context, config) {
+  if (config?.compliance_profile !== 'ftp_sports_tours' && String(context?.company || '').trim().toLowerCase() !== 'ftp') return [];
+  const text = `${draft?.subject || ''} ${draft?.body || ''}`;
+  const errors = [];
+  if (/\b(guaranteed|guarantee|lowest price|cheapest|best price)\b/i.test(text)) errors.push('Unverified guarantee or price claim.');
+  if (/\b(every|each|all)\b[^.!?\n]{0,90}\b(training|tournament access|tournaments)\b/i.test(text)) errors.push('Training or tournament access must not be promised for every package.');
+  return errors;
+}
 export function checkDraft(draft, evidence, signature, allowedText = []) {
   const problems = [];
   if (!draft || typeof draft.subject !== 'string' || typeof draft.body !== 'string' || !Array.isArray(draft.evidence_ids)) return ['Invalid draft structure.'];

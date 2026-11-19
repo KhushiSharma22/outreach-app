@@ -6,7 +6,7 @@ import { json, localView } from './lib.mjs';
 import { executeDiscovery, failRun, startDiscovery } from './sourcing.mjs';
 import { executeDraftRun, startDraftRun, approveDrafts } from './drafts.mjs';
 import { dispatchApproved, onDraftApproved } from './delivery.mjs';
-import { loadCampaign } from './campaigns.mjs';
+import { loadCampaign, scheduleTime } from './campaigns.mjs';
 import { planFollowups } from './sequences.mjs';
 
 const STALE_MS = () => +(process.env.JOB_STALE_MS || (process.env.VERCEL ? 6 * 60e3 : 15 * 60e3)); // a running job older than this was cut off
@@ -113,7 +113,7 @@ export async function runScheduler(db, ctxFor, at = Date.now(), send) {
     const ctx = ctxFor(c.workspace_id), s = json(c.data).schedule;
     try {
       const local = localView(at, s.timezone);
-      if (s.days.includes(local.weekday) && local.time >= s.time && !await db.get('SELECT 1 FROM discovery_runs WHERE campaign_id=? AND occurrence_date=?', [c.id, local.date])) {
+      if (s.days.includes(local.weekday) && local.time >= scheduleTime(s,local.weekday) && !await db.get('SELECT 1 FROM discovery_runs WHERE campaign_id=? AND occurrence_date=?', [c.id, local.date])) {
         await startDiscovery(ctx, c.id, { trigger: 'schedule', occurrenceDate: local.date });
       }
       await planFollowups(ctx, c.id);

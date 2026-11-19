@@ -5,16 +5,35 @@ import { randomBytes } from 'node:crypto';
 import { transport } from './mailbox.mjs';
 import { id, now } from './db.mjs';
 import { conflict, invalid, notFound, EMAIL_RE, normEmail, localView, zonedToUtc } from './lib.mjs';
-import { loadCampaign, scheduleErrors } from './campaigns.mjs';
+import { loadCampaign, scheduleErrors, scheduleTime } from './campaigns.mjs';
 import { validApproval, cancelLeadTasks } from './drafts.mjs';
 import { enrollOnSend, stopEnrollments, advanceEnrollment, holdOverdue, planFollowups } from './sequences.mjs';
+
+// FTP records an operator-reviewed basis before sending to Canada. This is a gate,
+// not a legal determination; unknown geography is held for review.
+function ftpAuthorizationReason(t) {
+  const context = JSON.parse(t.context_data || '{}');
+  const config = JSON.parse(t.campaign_config || '{}');
+  if (config.compliance_profile !== 'ftp_sports_tours' && String(context.company || '').trim().toLowerCase() !== 'ftp') return null;
+  const location = String(t.contact_location || t.company_location || '').toLowerCase();
+  if (/\b(canada|canadian)\b/.test(location)) {
+    const basis = t.casl_basis, expires = t.casl_expires_on;
+    if (t.casl_invalidated_at || !['express','implied_publication','implied_relationship','exemption'].includes(basis) || !t.casl_evidence || t.casl_email !== t.to_email ||
+        (basis !== 'express' && !expires) || (basis === 'implied_publication' && !t.casl_source_url) || (expires && expires < new Date().toISOString().slice(0,10)))
+      return 'Canada: record and review a current CASL consent or exemption basis before sending.';
+    return null;
+  }
+  if (!/\b(united states|usa|us)\b/.test(location)) return 'Confirm the recipient location and review the applicable sending rules before sending.';
+  return null;
+}
 
 export async function blockers(ctx, c) {
   const out = [], cfg = c.config;
   if (!c.name.trim() || !cfg.offer.trim()) out.push({ code: 'brief', message: 'Complete your campaign brief.' });
   if (!cfg.filters.roles.length && !cfg.filters.industries.length) out.push({ code: 'audience', message: 'Choose at least one job role or industry.' });
-  const sel = await ctx.db.all(`SELECT l.id, ct.email, s.reason suppressed, d.current_revision_id,
-    EXISTS (SELECT 1 FROM approvals a JOIN draft_revisions r ON r.id=a.revision_id WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL AND a.hash=r.hash) approved FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id
+  const sel = await ctx.db.all(`SELECT l.id, ct.email, ct.email to_email, ct.location contact_location, co.location company_location, ca.email casl_email, ca.basis casl_basis, ca.evidence casl_evidence, ca.source_url casl_source_url, ca.expires_on casl_expires_on, ca.invalidated_at casl_invalidated_at, s.reason suppressed, d.current_revision_id,
+    EXISTS (SELECT 1 FROM approvals a JOIN draft_revisions r ON r.id=a.revision_id WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL AND a.hash=r.hash) approved FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id JOIN companies co ON co.id=ct.company_id
+    LEFT JOIN casl_authorizations ca ON ca.workspace_id=ct.workspace_id AND ca.contact_id=ct.id
     LEFT JOIN suppressions s ON s.workspace_id=ct.workspace_id AND s.email=ct.email LEFT JOIN drafts d ON d.lead_id=l.id
     WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified'`, [c.id]);
   if (!sel.length) out.push({ code: 'leads', message: 'Select at least one qualified prospect.' });
@@ -22,6 +41,8 @@ export async function blockers(ctx, c) {
   if (unapproved) out.push({ code: 'approvals', message: `Approve every email (${unapproved} still need approval).` });
   const bad = sel.filter(l => !l.email || !EMAIL_RE.test(l.email) || l.suppressed).length;
   if (bad) out.push({ code: 'recipients', message: `${bad} selected recipient${bad > 1 ? 's are' : ' is'} missing a usable email or suppressed.` });
+  const complianceHolds = sel.filter(l => ftpAuthorizationReason({...l,context_data:JSON.stringify(c.context.data),campaign_config:JSON.stringify(c.config)})).length;
+  if (complianceHolds) out.push({code:'contact_authorization',message:`${complianceHolds} selected recipient(s) need location or Canada consent/exemption review before sending.`});
   if(cfg.delivery==='smtp'){
     if(!await ctx.db.get('SELECT 1 FROM mailboxes WHERE workspace_id=?',[ctx.ws]))out.push({code:'mailbox',message:'Connect your email before launching scheduled delivery.'});
     if(!ctx.publicUrl?.startsWith('https://'))out.push({code:'unsubscribe_url',message:'Configure a public HTTPS URL for unsubscribe links before launching scheduled delivery.'});
@@ -38,8 +59,8 @@ export function scheduledDue(config,at=Date.now()){
  const schedule=config.schedule,local=localView(at,schedule.timezone);
  for(let n=0;n<8;n++){
   const date=new Date(Date.parse(local.date+'T12:00:00Z')+n*864e5).toISOString().slice(0,10);
-  const when=Date.parse(zonedToUtc(date,schedule.time,schedule.timezone)),view=localView(when,schedule.timezone);
-  if(schedule.days.includes(view.weekday))return new Date(Math.max(at,when)).toISOString();
+  const weekday=localView(Date.parse(date+'T12:00:00Z'), 'UTC').weekday;
+  if(schedule.days.includes(weekday)){ const when=Date.parse(zonedToUtc(date,scheduleTime(schedule,weekday),schedule.timezone)); return new Date(Math.max(at,when)).toISOString(); }
  }
  throw invalid('Select at least one sending day.');
 }
@@ -114,14 +135,15 @@ function blockedReason(t) {
   if (t.campaign_status !== 'active') return `Campaign is ${t.campaign_status}.`;
   if (t.email_status === 'invalid') return 'Recipient email is invalid.';
   if (t.suppressed) return `Recipient is suppressed (${t.suppressed}).`;
+  const authorization = ftpAuthorizationReason(t); if (authorization) return authorization;
   if (t.kind === 'followup' && t.sequence_status !== 'active') return t.sequence_status === 'draft' ? 'Sequence is being edited.' : 'Sequence is paused.';
   if (t.kind === 'followup' && t.enrollment_status !== 'active') return 'Follow-ups stopped for this recipient.';
   return null;
 }
-const TASK_SELECT = `SELECT st.*, c.name campaign_name, c.status campaign_status, cv.data campaign_config, w.sending_stopped, ct.first_name, ct.last_name, ct.email_status, co.name company,
+const TASK_SELECT = `SELECT st.*, c.name campaign_name, c.status campaign_status, cv.data campaign_config, ac.data context_data, w.sending_stopped, ct.first_name, ct.last_name, ct.email_status, ct.location contact_location, co.name company, co.location company_location, ca.email casl_email, ca.basis casl_basis, ca.evidence casl_evidence, ca.source_url casl_source_url, ca.expires_on casl_expires_on, ca.invalidated_at casl_invalidated_at,
   s.reason suppressed, e.status enrollment_status, sq.status sequence_status, v.steps sequence_steps, m.sent_at, m.proof
-  FROM send_tasks st JOIN campaigns c ON c.id=st.campaign_id JOIN campaign_config_versions cv ON cv.campaign_id=c.id AND cv.version=c.config_version JOIN workspaces w ON w.id=st.workspace_id JOIN contacts ct ON ct.id=st.contact_id JOIN companies co ON co.id=ct.company_id
-  LEFT JOIN suppressions s ON s.workspace_id=st.workspace_id AND s.email=st.to_email LEFT JOIN enrollments e ON e.id=st.enrollment_id
+  FROM send_tasks st JOIN campaigns c ON c.id=st.campaign_id JOIN campaign_config_versions cv ON cv.campaign_id=c.id AND cv.version=c.config_version JOIN account_context_versions ac ON ac.id=c.context_version_id JOIN workspaces w ON w.id=st.workspace_id JOIN contacts ct ON ct.id=st.contact_id JOIN companies co ON co.id=ct.company_id
+  LEFT JOIN casl_authorizations ca ON ca.workspace_id=st.workspace_id AND ca.contact_id=ct.id LEFT JOIN suppressions s ON s.workspace_id=st.workspace_id AND s.email=st.to_email LEFT JOIN enrollments e ON e.id=st.enrollment_id
   LEFT JOIN sequences sq ON sq.id=e.sequence_id LEFT JOIN sequence_versions v ON v.id=e.sequence_version_id LEFT JOIN messages m ON m.send_task_id=st.id`;
 function shapeTask(t) {
   const blocked = blockedReason(t);
@@ -250,7 +272,7 @@ export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false
   if(t.kind==='followup' && no_reply_confirmed!==true) throw invalid('Check your inbox and confirm no reply or opt-out before this follow-up.');
   if(t.status!=='pending'||blockedReason(t)||Date.parse(t.due_at)>Date.now()) throw conflict('blocked','This task is not eligible for sending.');
   const campaign=await loadCampaign(ctx,t.campaign_id);
-  if(automatic && (campaign.config.delivery!=='smtp'||!campaign.config.schedule.days.includes(localView(Date.now(),campaign.config.schedule.timezone).weekday)||localView(Date.now(),campaign.config.schedule.timezone).time<campaign.config.schedule.time))throw conflict('schedule_closed','Outside the campaign sending schedule.');
+  if(automatic && (campaign.config.delivery!=='smtp'||!campaign.config.schedule.days.includes(localView(Date.now(),campaign.config.schedule.timezone).weekday)||localView(Date.now(),campaign.config.schedule.timezone).time<scheduleTime(campaign.config.schedule,localView(Date.now(),campaign.config.schedule.timezone).weekday)))throw conflict('schedule_closed','Outside the campaign sending schedule.');
   if(t.kind==='initial'){
    const local=localView(Date.now(),campaign.config.schedule.timezone);const start=new Date(zonedToUtc(local.date,'00:00',campaign.config.schedule.timezone)).toISOString();
    const sent=await ctx.db.get("SELECT count(*) n FROM send_tasks WHERE campaign_id=? AND kind='initial' AND status IN ('sending','sent','unknown') AND updated_at>=?",[t.campaign_id,start]);
@@ -265,12 +287,13 @@ export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false
   await ctx.db.run("UPDATE send_tasks SET status='sending',updated_at=? WHERE id=?",[now(),t.id]);
  });} catch(e){client.close();throw e;}
  const url=publicUrl+'/unsubscribe/'+token;
- const body=t.body+'\n\nBusiness marketing message\n'+row.postal_address+'\nUnsubscribe: '+url;
+ const senderCompany=String(JSON.parse(t.context_data||'{}').company||'').replace(/[\r\n]+/g,' ').trim();
+ const body=t.body+'\n\nBusiness marketing message'+(senderCompany?' from '+senderCompany:'')+'\nContact: '+row.sender+'\n'+row.postal_address+'\nUnsubscribe: '+url;
  try {
   // Last check before handing the message to the provider.
   const current=await loadTask(ctx,t.id);
   if(blockedReason({...current,status:'pending'}) || (t.kind==='initial'&&!await validApproval(ctx,t.draft_revision_id))) throw new Error('Eligibility changed before dispatch');
-  await client.sendMail({from:row.sender,to:t.to_email,subject:t.subject,text:body,disableFileAccess:true,disableUrlAccess:true});
+  await client.sendMail({from:row.sender,to:t.to_email,subject:t.subject,text:body,headers:{'List-Unsubscribe':`<${url}>`,'List-Unsubscribe-Post':'List-Unsubscribe=One-Click'},disableFileAccess:true,disableUrlAccess:true});
  } catch {
   await ctx.db.run("UPDATE send_tasks SET status='unknown', status_reason='SMTP outcome uncertain. Review mailbox before any retry.',updated_at=? WHERE id=?",[now(),t.id]);
   throw conflict('send_uncertain','Sending could not be confirmed. Check the mailbox; this task will not retry automatically.');
@@ -287,7 +310,7 @@ export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false
 // Unknown SMTP outcomes are never automatically retried. Follow-ups require a human inbox check.
 export async function dispatchApproved(ctx,campaignId,at=Date.now(),send=smtpSend){
  const c=await loadCampaign(ctx,campaignId),s=c.config.schedule,local=localView(at,s.timezone);
- if(c.status!=='active'||c.config.delivery!=='smtp'||!s.days.includes(local.weekday)||local.time<s.time)return;
+ if(c.status!=='active'||c.config.delivery!=='smtp'||!s.days.includes(local.weekday)||local.time<scheduleTime(s,local.weekday))return;
  const tasks=await ctx.db.all("SELECT id FROM send_tasks WHERE workspace_id=? AND campaign_id=? AND kind='initial' AND status='pending' AND due_at<=? ORDER BY due_at,id LIMIT 30",[ctx.ws,c.id,new Date(at).toISOString()]);
  for(const task of tasks){
   try{await send(ctx,task.id,ctx.publicUrl,{automatic:true});}

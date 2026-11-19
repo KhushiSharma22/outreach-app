@@ -1,2 +1,2 @@
-first_name,last_name,email,company,role,industry,employees,location,email_status,research_fact,research_url,quality_score
-Alex,Example,alex@example.com,Example Company,Founder,E-commerce,5,United States,unverified,Replace with a sourced company observation,https://example.com,100
+first_name,last_name,email,company,role,industry,employees,location,email_status,research_fact,research_url,quality_score,casl_basis,casl_evidence,casl_source_url,casl_expires_on
+Alex,Example,alex@example.com,Example Company,Founder,E-commerce,5,United States,unverified,Replace with a sourced company observation,https://example.com,100,,,,

@@ -11,6 +11,16 @@ export const DEFAULT_CONTEXT = {
   tone: 'Conversational', sender: 'Maya', email: 'maya@northstar.example', signature: 'Maya\nNorthstar',
   exclusions: 'Existing customers, competitors, agencies, and active opportunities',
 };
+// New FTP workspaces get a starting brief; existing workspaces and versions are never rewritten.
+export function newWorkspaceContext({company, name, email}) {
+  const base = {...DEFAULT_CONTEXT, company, website:'', offering:'', icp:'', proof:'', sender:name.split(' ')[0], email, signature:`${name}\n${company}`};
+  if (company.trim().toLowerCase() !== 'ftp') return base;
+  return {...base,
+    offering:'Tailored soccer tours and tournament packages in the UK and Europe for teams and academies.',
+    icp:'Soccer coaches and academy directors based in the United States and Canada.',
+    proof:'Exclusive tournament access in Europe; professional training opportunities; flexible tailored packages; personal service; a dedicated tour manager throughout; sport, education and culture combined.',
+    exclusions:'', tone:'Warm'};
+}
 const CONTEXT_FIELDS = Object.keys(DEFAULT_CONTEXT);
 const TONES = ['Conversational', 'Professional', 'Warm'];
 
@@ -77,6 +87,7 @@ export function normalizeConfig(base, patch = {}) {
     const s = patch.schedule;
     if ('days' in s) c.schedule.days = WEEKDAYS.filter(d => arr(s.days).includes(d));
     if ('time' in s) c.schedule.time = String(s.time || '');
+    if ('times' in s) { c.schedule.times = {}; for (const d of WEEKDAYS) if (Object.hasOwn(s.times || {}, d)) c.schedule.times[d] = String(s.times[d] || ''); }
     if ('timezone' in s) c.schedule.timezone = String(s.timezone || '');
   }
   if ('delivery' in patch) {if(!['manual','smtp'].includes(patch.delivery))throw invalid('Choose manual or scheduled SMTP delivery.');c.delivery=patch.delivery;}
@@ -86,10 +97,12 @@ export function normalizeConfig(base, patch = {}) {
   }
   return c;
 }
+export const scheduleTime = (s, day) => s.times?.[day] ?? s.time;
 export function scheduleErrors(s) {
   const e = [];
   if (!s.days.length) e.push('Choose at least one day.');
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(s.time)) e.push('Choose a valid time (HH:MM).');
+  for (const day of s.days) if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(scheduleTime(s, day))) e.push(`Choose a valid time for ${day}.`);
   if (!validTimezone(s.timezone)) e.push('Choose a valid timezone.');
   return e;
 }
@@ -112,10 +125,22 @@ export async function listCampaigns(ctx) {
     FROM campaigns c JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE c.workspace_id=? ORDER BY c.created_at DESC`, [ctx.ws]);
   return rows.map(({config_data,...c}) => ({...c,config:json(config_data)}));
 }
-export async function createCampaign(ctx, { name, prompt = '', brief, source } = {}) {
+export async function createCampaign(ctx, { name, prompt = '', brief, source, preset } = {}) {
   const context = await currentContext(ctx);
   if (!context) throw new AppError(409, 'missing_context', 'Save your company context first.');
   let config = defaultConfig(context.data);
+  if (preset) {
+    if (preset !== 'ftp-soccer-tours' || context.data.company.trim().toLowerCase() !== 'ftp') throw invalid('This campaign preset is available in the FTP workspace.');
+    name ||= 'FTP · Soccer tours to the UK & Europe';
+    config = normalizeConfig(config, {
+      offer: 'FTP creates tailored soccer tours and tournament packages in the UK and Europe, with opportunities for tournament access and professional training, a dedicated tour manager, personal service, and opportunities to combine sport, education and culture.',
+      filters: {roles:['Soccer Coach','Academy Director'],industries:['Soccer clubs and academies'],locations:['United States','Canada'],sizes:[],seniority:[],exclude:[]},
+      signals: [],
+      notes: 'Reach coaches and academy directors at US and Canadian soccer teams or academies. The UK and Europe are tour destinations, not prospect locations. Invite the team to ask for information or a tailored tour or tournament quote, including when comparing providers. Do not claim the lowest price, guarantee access, invent a website URL, or assume a team is already planning a tour.',
+      writing: {tone:'Warm',length:'Concise',angle:'Company-led',cta:'Start a conversation'}
+    });
+    config.compliance_profile = 'ftp_sports_tours';
+  }
   if (['import','salesnav','research','upload'].includes(source)) config.source=source;
   // An interpreted brief is applied only as the user confirmed it; the original prompt is kept verbatim.
   if (brief) config = normalizeConfig(config, { filters: brief.filters, signals: Array.isArray(brief.signals) ? brief.signals : config.signals, notes: brief.notes });

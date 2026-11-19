@@ -15,6 +15,7 @@ const HEADERS = {
   industry: ['industry'], employees: ['employees', 'company_size', 'company size', 'headcount', 'employee count', 'size'],
   location: ['location', 'country', 'region', 'city'], linkedin_url: ['linkedin_url', 'linkedin', 'linkedin url', 'profile url', 'person linkedin url'],
   relationship: ['relationship', 'account status', 'status', 'tags'],
+  casl_basis: ['casl_basis'], casl_evidence: ['casl_evidence'], casl_source_url: ['casl_source_url'], casl_expires_on: ['casl_expires_on'],
   signal: ['signal', 'signal type', 'signal_type', 'trigger'], signal_fact: ['signal_fact', 'signal fact', 'evidence', 'signal detail', 'research_fact', 'company_research'],
   signal_date: ['signal_date', 'signal date', 'event date', 'event_date'], signal_url: ['signal_url', 'source', 'source url', 'signal source', 'evidence url', 'research_url'],
 };
@@ -76,6 +77,18 @@ export async function importCsv(ctx, { filename = 'import.csv', csv, source = 'c
         await ctx.db.insert('contacts', { id: contactId, workspace_id: ctx.ws, ...fields, linkedin_url: linkedin, email, email_status: emailStatus, email_verifier: statusKey ? 'import' : null, email_checked_at: statusKey ? t : null, source_import_id: imp.id, created_at: t, updated_at: t });
         imp.created_count++;
       }
+      // A reviewer must record a legal basis; an email marked valid is not consent.
+      const basis=v('casl_basis').toLowerCase(), consentEvidence=v('casl_evidence'), consentUrl=v('casl_source_url'), expiry=v('casl_expires_on');
+      if (basis || consentEvidence || consentUrl || expiry) {
+        const validDate = !expiry || (/^\d{4}-\d{2}-\d{2}$/.test(expiry) && Number.isFinite(Date.parse(expiry)) && new Date(expiry).toISOString().slice(0,10)===expiry);
+        const validBasis = ['express','implied_publication','implied_relationship','exemption'].includes(basis);
+        if (!email || !validBasis || consentEvidence.length < 15 || !validDate || (basis !== 'express' && !expiry) || (basis === 'implied_publication' && !safeUrl(consentUrl)) || (consentUrl && !safeUrl(consentUrl))) {
+          await ctx.db.run('UPDATE casl_authorizations SET invalidated_at=? WHERE workspace_id=? AND contact_id=?',[t,ctx.ws,contactId]);
+          rejected.push({line,reason:'Contact imported; previous CASL record invalidated and new record not saved. Supply a supported basis, at least 15 characters of evidence, a source URL for publication, and an expiry date for non-express bases.',partial:true});
+        } else {
+          await ctx.db.run(`INSERT INTO casl_authorizations(workspace_id,contact_id,email,basis,evidence,source_url,expires_on,reviewed_by,reviewed_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,contact_id) DO UPDATE SET email=excluded.email,basis=excluded.basis,evidence=excluded.evidence,source_url=excluded.source_url,expires_on=excluded.expires_on,reviewed_by=excluded.reviewed_by,reviewed_at=excluded.reviewed_at,invalidated_at=NULL`,[ctx.ws,contactId,email,basis,consentEvidence.slice(0,2000),safeUrl(consentUrl),expiry||null,ctx.user?.id||null,t]);
+        }
+      }
       if (importedIds) importedIds.push(contactId);
       const fact = v('signal_fact'), signal = SIGNAL_ALIASES[v('signal').toLowerCase()] || null;
       if (v('signal') && !signal) rejected.push({ line, reason: `Contact imported; unrecognized signal "${v('signal')}" was ignored. Use Hiring, Funding, New leadership, or Expansion.`, partial: true });
@@ -121,11 +134,11 @@ async function upsertCompany(ctx, c, t) {
 }
 
 // ---------- Deterministic checks ----------
-const ROLE_ALIASES = { Founder: /founder|co-founder|owner/, CEO: /\bceo\b|chief executive/, CTO: /\bcto\b|chief technology/, 'Head of Growth': /head of growth|growth lead|vp,? growth|director of growth/, 'Head of Sales': /head of sales|sales head|director of sales|sales director/, 'VP Sales': /vp,? sales|vice president,? sales/, 'Marketing Director': /marketing director|director of marketing|head of marketing|\bcmo\b/, 'HR Director': /\bhr\b|human resources|people|talent/ };
+const ROLE_ALIASES = { 'Soccer Coach': /\bcoach(?:ing)?\b/, 'Academy Director': /(?:academy|club|coaching|technical|sporting|soccer|football).{0,25}director|director.{0,25}(?:academy|club|coaching|technical|sporting|soccer|football)/, Founder: /founder|co-founder|owner/, CEO: /\bceo\b|chief executive/, CTO: /\bcto\b|chief technology/, 'Head of Growth': /head of growth|growth lead|vp,? growth|director of growth/, 'Head of Sales': /head of sales|sales head|director of sales|sales director/, 'VP Sales': /vp,? sales|vice president,? sales/, 'Marketing Director': /marketing director|director of marketing|head of marketing|\bcmo\b/, 'HR Director': /\bhr\b|human resources|people|talent/ };
 const SENIORITY_RULES = [['Founder / Owner', /founder|owner/], ['C-level', /\bc[etofmr]o\b|chief/], ['VP / Head', /\bvp\b|vice president|head of/], ['Director', /director/], ['Manager', /manager|\blead\b/]];
-const LOCATION_ALIASES = { 'United States': /united states|\busa?\b|america/, 'United Kingdom': /united kingdom|\buk\b|england|london|scotland|britain/, UAE: /\buae\b|emirates|dubai|abu dhabi/, Europe: /europe|germany|france|spain|netherlands|ireland|sweden|italy|poland|portugal|denmark|finland|belgium|austria|switzerland/ };
+const LOCATION_ALIASES = { Canada: /\bcanada\b|\bcanadian\b/, 'United States': /united states|\busa?\b|america/, 'United Kingdom': /united kingdom|\buk\b|england|london|scotland|britain/, UAE: /\buae\b|emirates|dubai|abu dhabi/, Europe: /europe|germany|france|spain|netherlands|ireland|sweden|italy|poland|portugal|denmark|finland|belgium|austria|switzerland/ };
 const EXCLUDE_REL = { 'Existing customers': /customer|client/, Competitors: /competitor/, 'Active opportunities': /opportunit|in pipeline|deal/, Agencies: /agency/ };
-const INDUSTRY_ALIASES = { 'B2B SaaS': /saas|software/, 'E-commerce': /e-?commerce|d2c|online retail/, 'IT services': /it services|information technology|consult/ };
+const INDUSTRY_ALIASES = { 'Soccer clubs and academies': /\bsoccer\b|\bfootball\b/, 'B2B SaaS': /saas|software/, 'E-commerce': /e-?commerce|d2c|online retail/, 'IT services': /it services|information technology|consult/ };
 
 export const deriveSeniority = role => (SENIORITY_RULES.find(([, re]) => re.test((role || '').toLowerCase())) || [null])[0];
 const matches = (value, options, aliases = {}) => options.some(o => (aliases[o] || new RegExp(o.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')).test(value.toLowerCase()));
