@@ -120,7 +120,12 @@ export async function runScheduler(db, ctxFor, at = Date.now(), send, { weeklyOn
         const offset=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].indexOf(weekdayOf(istDate));
         const monday=addDays(istDate,-offset),sunday=addDays(monday,6);
         const reserved=await db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date>=? AND slot_date<=? LIMIT 1',[c.workspace_id,c.id,monday,sunday]);
-        if(!reserved) { try { await startWeeklyDiscovery(ctx,c.id,at); } catch(e) { if(!['no_new_contacts','weekly_full','discovery_running'].includes(e.code)) throw e; } }
+        // A newly imported research list can arrive after this week's original reservation.
+        // Fill an eligible day after midnight, instead of waiting for the sending time.
+        const day = await db.get('SELECT campaign_id,allocated FROM research_days WHERE workspace_id=? AND day=?',[c.workspace_id,local.date]);
+        const days = await db.all('SELECT day FROM research_days WHERE workspace_id=? AND day>=? AND day<=?',[c.workspace_id,monday,sunday]);
+        const canFillToday = s.days.includes(local.weekday) && (!day || day.campaign_id===c.id) && Number(day?.allocated||0)<Math.min(30,json(c.data).target) && (day || days.length<5);
+        if(!reserved || canFillToday) { try { await startWeeklyDiscovery(ctx,c.id,at); } catch(e) { if(!['no_new_contacts','weekly_full','discovery_running'].includes(e.code)) throw e; } }
       }
       const needsDrafts = await db.get(`SELECT 1 FROM weekly_slots ws JOIN campaign_leads l ON l.campaign_id=ws.campaign_id AND l.contact_id=ws.contact_id LEFT JOIN drafts d ON d.lead_id=l.id WHERE ws.workspace_id=? AND ws.campaign_id=? AND ws.slot_date=? AND l.selected=1 AND l.decision='qualified' AND d.id IS NULL LIMIT 1`,[c.workspace_id,c.id,local.date]);
       if (needsDrafts) await startDraftRun(ctx,c.id);
