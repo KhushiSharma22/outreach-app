@@ -39,21 +39,28 @@ export default async function handler(req, res) {
     return;
   }
   const finished = new Promise(r => { res.once('finish', r); res.once('close', r); });
-  await app.handle(req, res);
+  let markHandled;
+  const handled = new Promise(resolve => { markHandled = resolve; });
+  // Register before the response ends. Registering after `finish` can leave the
+  // platform free to freeze the function while SMTP or draft jobs are running.
+  const afterResponse = (async () => {
+    await handled;
+    await finished;
+    const kicked = app.jobs.takeKick();
+    pendingKick ||= kicked;
+    if (shouldScheduleAfterRequest(req.method, req.url, res.statusCode) || Date.now() - lastSchedule > SCHEDULE_EVERY_MS) { lastSchedule = Date.now(); pendingSchedule = true; }
+    if ((pendingKick || pendingSchedule) && !background) {
+      background = (async () => {
+        while (pendingKick || pendingSchedule) {
+          const schedule = pendingSchedule; pendingKick = false; pendingSchedule = false;
+          if (schedule) { try { await app.scheduler(); } catch (e) { logBackground(e); } }
+          await app.jobs.runDue();
+        }
+      })().catch(logBackground).finally(() => { background = null; });
+    }
+    if (background) await background;
+  })().catch(logBackground);
+  waitUntil(afterResponse);
+  try { await app.handle(req, res); } finally { markHandled(); }
   await finished;
-  // Discovery and drafting queued by this request run after the response; the daily scheduler is also
-  // checked here (at most once a minute per instance) so schedules don't depend on the cron alone.
-  const kicked = app.jobs.takeKick();
-  pendingKick ||= kicked;
-  if (shouldScheduleAfterRequest(req.method, req.url, res.statusCode) || Date.now() - lastSchedule > SCHEDULE_EVERY_MS) { lastSchedule = Date.now(); pendingSchedule = true; }
-  if ((pendingKick || pendingSchedule) && !background) {
-    background = (async () => {
-      while (pendingKick || pendingSchedule) {
-        const schedule = pendingSchedule; pendingKick = false; pendingSchedule = false;
-        if (schedule) { try { await app.scheduler(); } catch (e) { logBackground(e); } }
-        await app.jobs.runDue();
-      }
-    })().catch(logBackground).finally(() => { background = null; });
-  }
-  if (background) waitUntil(background);
 }

@@ -11,9 +11,9 @@ process.env.AI_PROVIDER = 'offline';
 process.env.AUTH_MODE = 'dev';
 process.env.CRON_SECRET = 'test-cron-secret';
 process.env.OPERATOR_EMAILS = 'maya@northstar.example'; // pilot: only operators import leads
-const pending = [];
+const pending = []; let backgroundRegistrations=0, registeredBeforeResponse=false;
 // Vercel's request context, as read by waitUntil().
-globalThis[Symbol.for('@vercel/request-context')] = { get: () => ({ waitUntil: p => pending.push(p) }) };
+globalThis[Symbol.for('@vercel/request-context')] = { get: () => ({ waitUntil: p => {backgroundRegistrations++;pending.push(p);} }) };
 let tdb, server, base, mod, cron, weeklyCron, app, bufferBodies = false;
 
 before(async () => {
@@ -24,6 +24,8 @@ before(async () => {
   weeklyCron = (await import('../api/weekly-cron.mjs')).default;
   app = await mod.getApp();
   server = createServer(async (req, res) => {
+    const before=backgroundRegistrations, originalEnd=res.end;
+    res.end=function(...args){if(req.url.startsWith('/api/session'))registeredBeforeResponse=backgroundRegistrations>before;return originalEnd.apply(this,args);};
     if (bufferBodies && req.method !== 'GET') { // simulate a platform that pre-reads the body
       const chunks = []; for await (const c of req) chunks.push(c);
       req.body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
@@ -46,6 +48,7 @@ const settle = async () => { while (pending.length) await pending.shift(); };
 test('rewritten paths and query strings reach the app', async () => {
   const s = await call('GET', '/api/session');
   assert.equal(s.status, 200);
+  assert.equal(registeredBeforeResponse,true,'background work is registered before the response ends');
   assert.equal(s.data.workspace.name, 'Northstar');
   const leads = await call('GET', '/api/contacts?q=nobody&page=0');
   assert.equal(leads.status, 200);
