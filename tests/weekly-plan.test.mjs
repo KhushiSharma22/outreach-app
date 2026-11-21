@@ -16,3 +16,8 @@ test('limited sending days do not overbook or silently spill into the next week'
  assert.throws(()=>planWeeklySlots({monday:'2026-11-24',count:1,schedule}));
  assert.throws(()=>planWeeklySlots({monday:'2026-11-23',count:151,schedule}));
 });
+
+test('a selected Saturday is available when earlier selected days have passed',()=>{
+ const p=planWeeklySlots({monday:'2026-11-16',notBefore:'2026-11-21',count:3,target:3,schedule:{days:['Mon','Tue','Wed','Thu','Fri','Sat'],time:'22:10',timezone:'Asia/Kolkata'}});
+ assert.equal(p.days[0].date,'2026-11-21');assert.equal(p.days[0].due_at,'2026-11-21T16:40:00.000Z');assert.equal(p.assigned,3);
+});

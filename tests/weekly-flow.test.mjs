@@ -96,3 +96,15 @@ test('another campaign holding this week moves planning to next week',async()=>{
   const r=await startWeeklyDiscovery(ctx,c.id,Date.now());assert.equal(r.first_date,'2026-11-30');
  }finally{Date.now=originalNow;await db.close();}
 });
+
+test('Saturday at 10:10pm is usable today even when weekdays are also selected',async()=>{
+ const db=await openDb({file:':memory:'}),originalNow=Date.now;process.env.AI_PROVIDER='offline';Date.now=()=>Date.parse('2026-11-21T22:00:00+05:30');
+ try{
+  const {workspace,user}=await seedWorkspace(db),ctx={db,ws:workspace.id,user,publicUrl:'https://app.example.com',jobs:{enqueue:async()=>({id:'job'})}};
+  let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
+  c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{target:3,schedule:{days:['Mon','Tue','Wed','Thu','Fri','Sat'],time:'22:10',timezone:'Asia/Kolkata'}}});
+  const csv='first_name,last_name,email,company,role,email_status,quality_score\n'+Array.from({length:3},(_,i)=>`Alex,Test,saturday${i}@example.com,Company${i},Founder,valid,95`).join('\n');
+  await seedResearch(ctx,c.id,{csv,available_on:'2026-11-21'});
+  const r=await startWeeklyDiscovery(ctx,c.id,Date.now());assert.equal(r.first_date,'2026-11-21');assert.equal(r.assigned,3);
+ }finally{Date.now=originalNow;await db.close();}
+});

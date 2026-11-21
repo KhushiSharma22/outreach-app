@@ -147,8 +147,11 @@ export async function startWeeklyDiscovery(ctx, campaignId, at = Date.now()) {
   await ctx.db.insert('discovery_runs',{id:runId,campaign_id:c.id,batch,config_version:c.config_version,trigger:'weekly',occurrence_date:null,status:'queued',progress:'{}',created_at:createdAt});
   // Use this week if it has room, otherwise reserve the next week. Never allocate both weeks in one request.
   for(const week of [monday,addDays(monday,7)]){
-   const plan=planWeeklySlots({monday:week,count:eligible.length,target:c.config.target,schedule:c.config.schedule});
-   for(const day of plan.days.filter(d=>d.date>=localToday)){
+   const plan=planWeeklySlots({monday:week,count:eligible.length,target:c.config.target,schedule:c.config.schedule,notBefore:localToday});
+   const already=await ctx.db.all('SELECT day FROM research_days WHERE workspace_id=? AND day>=? AND day<=?',[ctx.ws,week,addDays(week,6)]);
+   const reservedDays=new Set(already.map(row=>row.day));
+   for(const day of plan.days){
+    if(!reservedDays.has(day.date) && reservedDays.size>=5)continue;
     const existing=await ctx.db.get('SELECT * FROM research_days WHERE workspace_id=? AND day=?',[ctx.ws,day.date]);
     if(existing&&existing.campaign_id!==c.id)continue;
     const room=Math.max(0,Math.min(c.config.target,30)-Number(existing?.allocated||0));
@@ -156,7 +159,7 @@ export async function startWeeklyDiscovery(ctx, campaignId, at = Date.now()) {
      await ctx.db.insert('campaign_contact_claims',{workspace_id:ctx.ws,campaign_id:c.id,contact_id:lead.id,run_id:runId,source:'research'});
      await ctx.db.insert('weekly_slots',{workspace_id:ctx.ws,campaign_id:c.id,contact_id:lead.id,run_id:runId,slot_date:day.date});n++;
     }
-    if(n){firstDate ||= day.date;assignedWeek=week;await ctx.db.run(`INSERT INTO research_days(workspace_id,day,campaign_id,allocated) VALUES(?,?,?,?) ON CONFLICT(workspace_id,day) DO UPDATE SET allocated=research_days.allocated+excluded.allocated`,[ctx.ws,day.date,c.id,n]);}
+    if(n){firstDate ||= day.date;assignedWeek=week;reservedDays.add(day.date);await ctx.db.run(`INSERT INTO research_days(workspace_id,day,campaign_id,allocated) VALUES(?,?,?,?) ON CONFLICT(workspace_id,day) DO UPDATE SET allocated=research_days.allocated+excluded.allocated`,[ctx.ws,day.date,c.id,n]);}
    }
    if(cursor)break;
   }
