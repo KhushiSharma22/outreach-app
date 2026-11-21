@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {encrypt,decrypt,connect,status,connectionFailure} from '../server/mailbox.mjs';
+import {encrypt,decrypt,connect,status,connectionFailure,verifySaved} from '../server/mailbox.mjs';
 import {openDb} from '../server/db.mjs';
 import {seedWorkspace} from '../server/app.mjs';
 test('authenticated encryption rejects swapped tenants, tampering and changed keys',()=>{
@@ -35,4 +35,13 @@ test('SMTP errors explain the failed stage without exposing provider responses',
  }
  assert.match(connectionFailure({},'send').message,/login succeeded/);
  assert.match(connectionFailure({},'verify').message,/verification failed/);
+});
+
+
+test('saved SMTP can be checked without sending an email or disclosing secrets',async()=>{
+ let closed=false,sent=false;const ctx={user:{role:'owner'}};
+ const factory=async()=>({client:{verify:async()=>true,sendMail:async()=>{sent=true},close:()=>{closed=true}}});
+ assert.deepEqual(await verifySaved(ctx,factory),{ok:true});assert.equal(sent,false);assert.equal(closed,true);
+ await assert.rejects(verifySaved({user:{role:'member'}},factory),/owner/);
+ await assert.rejects(verifySaved(ctx,async()=>({client:{verify:async()=>{throw {code:'EAUTH',message:'secret'}} ,close(){}}})),e=>/login was rejected/.test(e.message)&&!e.message.includes('secret'));
 });

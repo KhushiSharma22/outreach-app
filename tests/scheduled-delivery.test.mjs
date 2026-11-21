@@ -55,3 +55,20 @@ test('per-day times and late approvals use the correct local day', async()=>{
  const base=defaultConfig({offering:'',tone:'Warm'});
  assert.equal(normalizeConfig(base,{schedule}).schedule.times.Tue,'15:00');
 });
+
+test('uncertain SMTP task only retries after mailbox confirmation and successful connection check',()=>setup(async ctx=>{
+ const {retryUnknown}=await import('../server/delivery.mjs');
+ let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
+ c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{delivery:'smtp',schedule:{days:['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],time:'00:00',timezone:'UTC'}}});
+ await seedResearch(ctx,c.id,{csv});const run=await startDiscovery(ctx,c.id);await executeDiscovery(ctx,run.id);await executeDraftRun(ctx,{campaign_id:c.id});
+ const drafts=await listDrafts(ctx,c.id);await approveDrafts(ctx,{items:drafts.items.map(l=>({draft_id:l.draft.id,revision_id:l.draft.revision_id})),confirm:true});
+ await ctx.db.insert('mailboxes',{workspace_id:ctx.ws,sender:ctx.user.email,postal_address:'123 Test Street',credentials:'test',updated_at:new Date().toISOString()});
+ await launch(ctx,c.id,{revision:c.revision});const task=await ctx.db.get('SELECT id FROM send_tasks LIMIT 1');
+ await ctx.db.run("UPDATE send_tasks SET status='unknown' WHERE id=?",[task.id]);
+ await assert.rejects(retryUnknown(ctx,task.id,{},async()=>{}),/Sent mailbox/);
+ await assert.rejects(retryUnknown(ctx,task.id,{mailbox_checked:true},async()=>{throw Error('connection failed')}),/connection failed/);
+ assert.equal((await ctx.db.get('SELECT status FROM send_tasks WHERE id=?',[task.id])).status,'unknown');
+ await retryUnknown(ctx,task.id,{mailbox_checked:true},async()=>{});
+ assert.equal((await ctx.db.get('SELECT status FROM send_tasks WHERE id=?',[task.id])).status,'pending');
+ await assert.rejects(retryUnknown(ctx,task.id,{mailbox_checked:true},async()=>{}),/uncertain emails/);
+}));

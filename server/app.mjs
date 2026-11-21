@@ -178,6 +178,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
   for (const a of ['pause', 'resume', 'edit']) route('POST', `/api/sequences/:id/${a}`, async (ctx, p) => await sequences.setSequenceState(ctx, p.id, a));
   route('GET', '/api/send-tasks', async (ctx, p, b, q) => await delivery.listTasks(ctx, q));
   route('POST', '/api/send-tasks/:id/confirm-sent', async (ctx, p, body) => await delivery.confirmSent(ctx, p.id, body), { idem: true });
+  route('POST', '/api/send-tasks/:id/retry-unknown', async (ctx,p,body)=>await delivery.retryUnknown(ctx,p.id,body));
   route('POST', '/api/send-tasks/:id/skip', async (ctx, p, body) => await delivery.skipTask(ctx, p.id, body));
   route('POST', '/api/send-tasks/:id/release', async (ctx, p) => await delivery.releaseTask(ctx, p.id));
   route('POST', '/api/contacts/:id/outcomes', async (ctx, p, body) => await delivery.recordOutcome(ctx, p.id, body), { status: 201 });
@@ -185,6 +186,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
   route('POST', '/api/tasks/:id/send-smtp', (ctx,p,body) => delivery.smtpSend(ctx,p.id,publicUrl,body));
   route('DELETE', '/api/mailbox', async ctx => {if(ctx.user.role!=='owner') throw new AppError(403,'owner_only','Owner access required.'); await ctx.db.run('DELETE FROM mailboxes WHERE workspace_id=?',[ctx.ws]); await ctx.db.audit(ctx.ws,null,'mailbox.disconnected','SMTP credentials removed',{},ctx.user.id); return {disconnected:true};});
   route('GET', '/api/mailbox', ctx => mailbox.status(ctx));
+  route('POST', '/api/mailbox/verify', ctx => mailbox.verifySaved(ctx));
   route('POST', '/api/mailbox', (ctx,p,body) => {if((process.env.NODE_ENV==='production'||process.env.VERCEL)&&!publicUrl.startsWith('https://')) throw new AppError(503,'https_required','Configure HTTPS before connecting a mailbox.'); return mailbox.connect(ctx,body);});
   route('GET', '/api/imports', async ctx => ({ items: await reporting.listImports(ctx) }));
   route('POST', '/api/imports', async (ctx, p, body) => { if (!await admin.isOperator(db, ctx.user.email)) throw new AppError(403,'operator_only','Lead imports are managed by the pilot team.'); return sourcing.importCsv(ctx, body); }, { status: 201, idem: true });

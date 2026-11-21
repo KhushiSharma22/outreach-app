@@ -2,7 +2,7 @@
 // Delivery is manual: the app prepares approved messages; the user sends them from their own
 // mailbox and confirms. A confirmation is recorded as user-confirmed, never as provider-verified.
 import { randomBytes } from 'node:crypto';
-import { transport } from './mailbox.mjs';
+import { transport, verifySaved } from './mailbox.mjs';
 import { id, now } from './db.mjs';
 import { conflict, invalid, notFound, EMAIL_RE, normEmail, localView, zonedToUtc, weekdayOf } from './lib.mjs';
 import { loadCampaign, scheduleErrors, scheduleTime } from './campaigns.mjs';
@@ -212,6 +212,27 @@ export async function confirmSent(ctx, taskId, { sent_at } = {}) {
   });
   return shapeTask(await loadTask(ctx, t.id));
 }
+// A retry is never automatic: the user must first inspect their mailbox.
+export async function retryUnknown(ctx,taskId,{mailbox_checked=false}={},checkConnection=verifySaved){
+ if(mailbox_checked!==true)throw invalid('Check your Sent mailbox and confirm this email was not sent.');
+ const before=await loadTask(ctx,taskId);
+ if(before.status!=='unknown')throw conflict('not_unknown','Only uncertain emails can be reviewed for retry.');
+ if(before.kind!=='initial'||JSON.parse(before.campaign_config).delivery!=='smtp')throw conflict('not_eligible','Only scheduled initial SMTP emails can use this action.');
+ const blocked=blockedReason({...before,status:'pending'});if(blocked)throw conflict('blocked',blocked);
+ if(!await validApproval(ctx,before.draft_revision_id))throw conflict('approval_invalid','Review and approve this email again.');
+ await checkConnection(ctx);
+ await ctx.db.tx(async()=>{
+  await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
+  const t=await loadTask(ctx,taskId);
+  if(t.status!=='unknown')throw conflict('not_unknown','This email has already been resolved.');
+  const reason=blockedReason({...t,status:'pending'});if(reason)throw conflict('blocked',reason);
+  if(!await validApproval(ctx,t.draft_revision_id))throw conflict('approval_invalid','Review and approve this email again.');
+  await ctx.db.run("UPDATE send_tasks SET status='pending',status_reason='Mailbox checked: retry requested by user',due_at=?,updated_at=? WHERE id=? AND status='unknown'",[now(),now(),taskId]);
+  await ctx.db.audit(ctx.ws,t.campaign_id,'delivery.retry_requested','User checked mailbox and requested SMTP retry',{task_id:taskId},ctx.user?.id);
+ });
+ return shapeTask(await loadTask(ctx,taskId));
+}
+
 export async function skipTask(ctx, taskId, { reason } = {}) {
   const t = await loadTask(ctx, taskId);
   if (!['pending', 'held'].includes(t.status)) throw conflict('not_open', `This task is ${t.status}.`);

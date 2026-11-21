@@ -28,6 +28,14 @@ export function connectionFailure(error, stage) {
  else message='SMTP verification failed. Check provider settings, app password and whether SMTP access is enabled.';
  return invalid(message+' Your previous connection has not been changed.');
 }
+// Verify the saved connection without sending an email or returning credentials.
+export async function verifySaved(ctx, makeTransport=transport) {
+ if(ctx.user?.role!=='owner')throw new AppError(403,'owner_only','Only the workspace owner can test email settings.');
+ const {client}=await makeTransport(ctx);
+ try{await client.verify();return {ok:true};}
+ catch(error){throw connectionFailure(error,'verify');}
+ finally{client.close();}
+}
 export async function connect(ctx,body, createTransport) {
  if(ctx.user?.role!=='owner') throw new AppError(403,'owner_only','Only a workspace owner can configure email.');
  await ctx.db.tx(async()=>{

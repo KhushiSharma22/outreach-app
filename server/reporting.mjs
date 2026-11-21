@@ -24,6 +24,7 @@ export async function campaignMetrics(ctx, campaignId) {
     selected: await n(db, 'SELECT count(*) n FROM campaign_leads WHERE campaign_id=? AND selected=1', [id]),
     drafts_approved: await n(db, 'SELECT count(*) n FROM drafts d JOIN approvals a ON a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL WHERE d.campaign_id=?', [id]),
     queued: await n(db, "SELECT count(*) n FROM send_tasks WHERE campaign_id=? AND status IN ('pending','held')", [id]),
+    unknown: await n(db, "SELECT count(*) n FROM send_tasks WHERE campaign_id=? AND status='unknown'", [id]),
     sent: await n(db, 'SELECT count(*) n FROM messages WHERE campaign_id=?', [id]),
     contacted, replies, bounces: await outcome('bounce'), opt_outs: await outcome('opt_out'), meetings: await outcome('meeting'),
     reply_rate: contacted ? Math.round(1000 * replies / contacted) / 10 : null,
