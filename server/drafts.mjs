@@ -221,6 +221,8 @@ export async function rewriteDraft(ctx, draftId, { revision_id, style, instructi
 
 // Attachments are immutable snapshots of each approved revision. A campaign default is
 // copied to future drafts; changing a file always creates a new, unapproved revision.
+const MAX_ATTACHMENT_BYTES=3*1024*1024;
+const MAX_ATTACHMENT_BASE64=4*Math.ceil(MAX_ATTACHMENT_BYTES/3);
 export async function setAttachment(ctx,campaignId,{draft_id,revision_id,scope,file}) {
   if(!['one','all'].includes(scope)) throw invalid('Choose this email or all campaign emails.');
   const c=await loadCampaign(ctx,campaignId),selected=await loadDraft(ctx,draft_id);
@@ -229,9 +231,9 @@ export async function setAttachment(ctx,campaignId,{draft_id,revision_id,scope,f
   if(['stopped','deleted'].includes(c.status)) throw conflict('campaign_stopped','This campaign cannot be changed.');
   let data=null;
   if(file!==null){
-    if(!file||typeof file.name!=='string'||typeof file.base64!=='string'||file.base64.length>1_400_000||!/^[A-Za-z0-9+/]*={0,2}$/.test(file.base64))throw invalid('Choose a PDF, PNG, JPEG or TXT file up to 1 MB.');
+    if(!file||typeof file.name!=='string'||typeof file.base64!=='string'||file.base64.length>MAX_ATTACHMENT_BASE64||!/^[A-Za-z0-9+/]*={0,2}$/.test(file.base64))throw invalid('Choose a PDF, PNG, JPEG or TXT file up to 3 MB.');
     const bytes=Buffer.from(file.base64,'base64'),name=file.name.trim();
-    if(!name||name.length>180||/[\x00-\x1f\x7f/\\]/.test(name)||bytes.length===0||bytes.length>1_000_000||bytes.toString('base64')!==file.base64)throw invalid('Choose a valid file up to 1 MB.');
+    if(!name||name.length>180||/[\x00-\x1f\x7f/\\]/.test(name)||bytes.length===0||bytes.length>MAX_ATTACHMENT_BYTES||bytes.toString('base64')!==file.base64)throw invalid('Choose a valid file up to 3 MB.');
     let mime;
     if(/\.pdf$/i.test(name)&&bytes.subarray(0,5).toString()==='%PDF-')mime='application/pdf';
     else if(/\.png$/i.test(name)&&bytes.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex')))mime='image/png';

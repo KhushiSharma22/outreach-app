@@ -50,6 +50,23 @@ test('attachments follow the exact approved revision, invalidate approval, and r
  assert.equal(sent.attachments[0].filename,'overview.txt');assert.equal(sent.attachments[0].content.toString(),'Tour overview');
  await assert.rejects(setAttachment(ctx,c.id,{draft_id:revised.id,revision_id:revised.revision_id,scope:'one',file:null}),e=>e.code==='delivery_in_progress');
 }));
+test('a 3 MiB attachment is accepted and passed to SMTP; larger files are rejected',()=>setup(async ctx=>{
+ const max=3*1024*1024;
+ let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
+ c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{target:1,delivery:'smtp',schedule:{days:['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],time:'00:00',timezone:'UTC'}}});
+ await seedResearch(ctx,c.id,{csv:'first_name,last_name,email,company,role,email_status,quality_score\nAlex,One,one@example.com,One,Founder,valid,97'});
+ const run=await startDiscovery(ctx,c.id);await executeDiscovery(ctx,run.id);await executeDraftRun(ctx,{campaign_id:c.id});
+ const draft=(await listDrafts(ctx,c.id)).items[0].draft;
+ const payload={draft_id:draft.id,revision_id:draft.revision_id,scope:'one',file:{name:'large.txt',base64:Buffer.alloc(max,65).toString('base64')}};
+ assert.ok(Buffer.byteLength(JSON.stringify(payload))<4_500_000,'encoded request remains below Vercel’s payload cap');
+ const result=await setAttachment(ctx,c.id,payload);assert.equal(result.draft.attachments[0].size,max);
+ await assert.rejects(setAttachment(ctx,c.id,{...payload,revision_id:result.draft.revision_id,file:{name:'large.txt',base64:Buffer.alloc(max+1,65).toString('base64')}}),/up to 3 MB/);
+ await approveDrafts(ctx,{items:[{draft_id:result.draft.id,revision_id:result.draft.revision_id}]});
+ await ctx.db.insert('mailboxes',{workspace_id:ctx.ws,sender:ctx.user.email,postal_address:'123 Test Street',credentials:'test',updated_at:new Date().toISOString()});
+ await launch(ctx,c.id,{revision:c.revision});const task=await ctx.db.get('SELECT * FROM send_tasks LIMIT 1');let received=0;
+ const fake=async()=>({row:{sender:ctx.user.email,postal_address:'123 Test Street'},client:{sendMail:async message=>{received=message.attachments[0].content.length},close(){}}});
+ await smtpSend(ctx,task.id,ctx.publicUrl,{automatic:true},fake);assert.equal(received,max);
+}));
 test('changing campaign writing immediately blocks old approved drafts until rewritten',()=>setup(async ctx=>{
  let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
  c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{delivery:'smtp',schedule:{days:['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],time:'00:00',timezone:'UTC'}}});
