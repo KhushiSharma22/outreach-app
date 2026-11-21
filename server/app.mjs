@@ -130,7 +130,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
   route('PATCH', '/api/campaigns/:id', async (ctx, p, body) => {if(body.config?.source && body.config.source!=='research' && !await admin.isOperator(db,ctx.user.email))throw new AppError(403,'operator_only','Lead lists are managed by the admin.');return await campaignView(ctx, await campaigns.updateCampaign(ctx, p.id, body));});
   route('GET', '/api/admin/research-campaigns', async ctx=>{
     if(!admin.isSuperAdmin(ctx.user.email))throw new AppError(403,'super_admin_only','Only super admins can prepare research lists.');
-    return {items:await db.all("SELECT c.id,c.name,c.workspace_id,w.name workspace,(SELECT u.email FROM users u WHERE u.workspace_id=w.id AND u.role='owner' ORDER BY u.created_at LIMIT 1) owner_email FROM campaigns c JOIN workspaces w ON w.id=c.workspace_id WHERE c.status<>'stopped' ORDER BY c.created_at DESC")};
+    return {items:await db.all("SELECT c.id,c.name,c.workspace_id,w.name workspace,(SELECT u.email FROM users u WHERE u.workspace_id=w.id AND u.role='owner' ORDER BY u.created_at LIMIT 1) owner_email FROM campaigns c JOIN workspaces w ON w.id=c.workspace_id WHERE c.status NOT IN ('stopped','deleted') ORDER BY c.created_at DESC")};
   });
   route('POST', '/api/admin/campaigns/:id/research-preview', async (ctx,p,body)=>{
     if(!admin.isSuperAdmin(ctx.user.email))throw new AppError(403,'super_admin_only','Only super admins can prepare research lists.');
@@ -166,6 +166,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
   route('POST', '/api/approvals', async (ctx, p, body) => { const results = await drafts.approveDrafts(ctx, body, delivery.onDraftApproved(ctx)); return { results, approved: results.filter(r => r.status === 'approved').length, failed: results.filter(r => r.status !== 'approved').length }; }, { idem: true });
   route('POST', '/api/campaigns/:id/launch', async (ctx, p, body) => { const r = await delivery.launch(ctx, p.id, body); return { ...await campaignView(ctx, r.campaign), created_tasks: r.created }; }, { idem: true });
   for (const a of ['pause', 'resume', 'stop']) route('POST', `/api/campaigns/:id/${a}`, async (ctx, p) => await campaignView(ctx, await delivery.setCampaignState(ctx, p.id, a)));
+  route('DELETE', '/api/campaigns/:id', async (ctx,p)=>await delivery.deleteCampaign(ctx,p.id));
   route('GET', '/api/campaigns/:id/metrics', async (ctx, p) => await reporting.campaignMetrics(ctx, p.id));
   route('GET', '/api/campaigns/:id/events', async (ctx, p, b, q) => await reporting.listEvents(ctx, { ...q, campaign_id: p.id }));
   route('GET', '/api/events', async (ctx, p, b, q) => await reporting.listEvents(ctx, q));

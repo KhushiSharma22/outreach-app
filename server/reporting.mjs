@@ -12,8 +12,11 @@ export async function campaignMetrics(ctx, campaignId) {
   const days = Array.from({ length: 7 }, (_, i) => addDays(today, i - 6));
   const byDay = (rows) => { const m = {}; for (const r of rows) { const d = localView(Date.parse(r.t), tz).date; m[d] = (m[d] || 0) + 1; } return days.map(d => m[d] || 0); };
   const since = new Date(Date.now() - 8 * 864e5).toISOString();
+  const todayWeekly = await db.get(`SELECT count(*) total, sum(CASE WHEN d.current_revision_id IS NOT NULL THEN 1 ELSE 0 END) drafted, sum(CASE WHEN d.current_revision_id IS NOT NULL AND d.current_revision_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL) THEN 1 ELSE 0 END) awaiting FROM weekly_slots ws JOIN campaign_leads l ON l.campaign_id=ws.campaign_id AND l.contact_id=ws.contact_id LEFT JOIN drafts d ON d.lead_id=l.id WHERE ws.workspace_id=? AND ws.campaign_id=? AND ws.slot_date=? AND l.selected=1 AND l.decision='qualified'`,[ctx.ws,id,today]);
+  const sentSeries=byDay(await db.all('SELECT sent_at t FROM messages WHERE campaign_id=? AND sent_at>=?', [id,since]));
   return {
-    definitions: { sent: 'Messages you confirmed sending from your own mailbox (manual confirmation, not provider-verified).', reply_rate: 'Unique contacts with a recorded reply ÷ unique contacts emailed.', meetings: 'Recorded manually.' },
+    daily: {date:today,timezone:tz,planned:Number(todayWeekly.total||0),drafted:Number(todayWeekly.drafted||0),awaiting:Number(todayWeekly.awaiting||0),sent_today:sentSeries[6],sent_yesterday:sentSeries[5]},
+    definitions: { sent: 'SMTP acceptance or manual confirmation; inbox delivery is not verified.', reply_rate: 'Unique contacts with a recorded reply ÷ unique contacts emailed.', meetings: 'Recorded manually.' },
     candidates: await n(db, "SELECT coalesce(sum(candidates),0) n FROM discovery_runs WHERE campaign_id=? AND status='completed'", [id]),
     qualified: await n(db, "SELECT count(*) n FROM campaign_leads WHERE campaign_id=? AND decision='qualified'", [id]),
     review: await n(db, "SELECT count(*) n FROM campaign_leads WHERE campaign_id=? AND decision='review'", [id]),
@@ -29,7 +32,7 @@ export async function campaignMetrics(ctx, campaignId) {
     series: {
       days,
       qualified: byDay(await db.all("SELECT created_at t FROM campaign_leads WHERE campaign_id=? AND decision='qualified' AND created_at>=?", [id, since])),
-      sent: byDay(await db.all('SELECT sent_at t FROM messages WHERE campaign_id=? AND sent_at>=?', [id, since])),
+      sent: sentSeries,
     },
   };
 }
@@ -38,7 +41,7 @@ export async function workspaceSummary(ctx) {
   return {
     active_campaigns: await n(db, "SELECT count(*) n FROM campaigns WHERE workspace_id=? AND status='active'", [ws]),
     awaiting_review: await n(db, `SELECT count(*) n FROM campaign_leads l JOIN campaigns c ON c.id=l.campaign_id LEFT JOIN drafts d ON d.lead_id=l.id
-      WHERE c.workspace_id=? AND c.status<>'stopped' AND l.selected=1 AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL)
+      WHERE c.workspace_id=? AND c.status<>'stopped' AND l.selected=1 AND d.current_revision_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL)
       AND NOT EXISTS (SELECT 1 FROM send_tasks st WHERE st.lead_id=l.id AND st.status='sent')`, [ws]),
     tasks_due: await n(db, "SELECT count(*) n FROM send_tasks st JOIN campaigns c ON c.id=st.campaign_id WHERE st.workspace_id=? AND c.status='active' AND st.status IN ('pending','held') AND st.due_at<=?", [ws, new Date().toISOString()]),
     replies_7d: await n(db, "SELECT count(DISTINCT contact_id) n FROM conversation_events WHERE workspace_id=? AND type='reply' AND occurred_at>=?", [ws, week]),

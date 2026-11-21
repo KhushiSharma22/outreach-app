@@ -113,7 +113,7 @@ async function configRow(ctx, campaignId, version) {
 }
 export async function loadCampaign(ctx, campaignId) {
   const c = await ctx.db.get('SELECT * FROM campaigns WHERE id=? AND workspace_id=?', [campaignId, ctx.ws]);
-  if (!c) throw notFound('Campaign');
+  if (!c || c.status === 'deleted') throw notFound('Campaign');
   c.config = await configRow(ctx, c.id, c.config_version);
   c.context = await contextById(ctx, c.context_version_id);
   return c;
@@ -122,7 +122,7 @@ export async function listCampaigns(ctx) {
   const rows = await ctx.db.all(`SELECT c.*, v.data config_data, (SELECT count(*) FROM campaign_leads l WHERE l.campaign_id=c.id AND l.selected=1) selected_count,
       (SELECT count(*) FROM messages m WHERE m.campaign_id=c.id) sent_count,
       (SELECT count(*) FROM conversation_events e WHERE e.campaign_id=c.id AND e.type='reply') reply_count
-    FROM campaigns c JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE c.workspace_id=? ORDER BY c.created_at DESC`, [ctx.ws]);
+    FROM campaigns c JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE c.workspace_id=? AND c.status<>'deleted' ORDER BY c.created_at DESC`, [ctx.ws]);
   return rows.map(({config_data,...c}) => ({...c,config:json(config_data)}));
 }
 export async function createCampaign(ctx, { name, prompt = '', brief, source, preset } = {}) {

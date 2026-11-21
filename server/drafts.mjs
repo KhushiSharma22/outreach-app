@@ -1,6 +1,6 @@
 // Campaign leads, drafts with immutable revisions, and revision-bound approvals.
 import { id, now, hash } from './db.mjs';
-import { AppError, notFound, conflict, invalid, json } from './lib.mjs';
+import { AppError, notFound, conflict, invalid, json, localView } from './lib.mjs';
 import { runAi, offlineProvider, checkDraft, checkFtpDraft } from './ai.mjs';
 import { loadCampaign } from './campaigns.mjs';
 
@@ -95,9 +95,9 @@ export async function startDraftRun(ctx, campaignId, { regenerate = false } = {}
   if (open && !regenerate) return open;
   return await ctx.jobs.enqueue(ctx.ws, 'drafts', { campaign_id: c.id, regenerate: regenerate === 'all' ? 'all' : !!regenerate });
 }
-export async function executeDraftRun(ctx, { campaign_id, regenerate, batch_limit = 0, after_lead_id = null }) {
+export async function executeDraftRun(ctx, { campaign_id, regenerate, batch_limit = 0, after_lead_id = null, at = Date.now() }) {
   const c = await loadCampaign(ctx, campaign_id);
-  const leads = await ctx.db.all(`${LEAD_SELECT} WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified' AND c.workspace_id=? ORDER BY l.id`, [c.id, ctx.ws]);
+  const leads = await ctx.db.all(`${LEAD_SELECT} WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified' AND c.workspace_id=? AND (wslot.slot_date IS NULL OR wslot.slot_date<=?) ORDER BY l.id`, [c.id, ctx.ws, localView(at,c.config.schedule.timezone).date]);
   let made = 0, flagged = 0, remaining = false, lastLeadId = after_lead_id;
   for (const l of leads) {
     if (after_lead_id && l.id <= after_lead_id) continue;
@@ -143,7 +143,7 @@ async function shapeDraft(ctx, d) {
 }
 export async function listDrafts(ctx, campaignId) {
   const c = await loadCampaign(ctx, campaignId);
-  const leads = await ctx.db.all(`${LEAD_SELECT} WHERE l.campaign_id=? AND l.selected=1 AND c.workspace_id=? ORDER BY l.score DESC, l.id`, [campaignId, ctx.ws]);
+  const leads = await ctx.db.all(`${LEAD_SELECT} WHERE l.campaign_id=? AND l.selected=1 AND c.workspace_id=? AND (wslot.slot_date IS NULL OR wslot.slot_date<=?) ORDER BY l.score DESC, l.id`, [campaignId, ctx.ws, localView(Date.now(),c.config.schedule.timezone).date]);
   const revisions = await ctx.db.all(`SELECT d.id draft_id, d.lead_id, r.*, a.created_at approved_at FROM drafts d JOIN draft_revisions r ON r.id=d.current_revision_id LEFT JOIN approvals a ON a.id=(SELECT a2.id FROM approvals a2 WHERE a2.draft_id=d.id AND a2.revision_id=r.id AND a2.invalidated_at IS NULL AND a2.hash=r.hash ORDER BY a2.created_at DESC LIMIT 1) WHERE d.campaign_id=?`, [campaignId]);
   const evidence = await ctx.db.all(`SELECT l.id lead_id,e.id,e.signal,e.fact,e.source_url,e.event_date,e.collected_at,e.provenance FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id JOIN evidence e ON e.workspace_id=ct.workspace_id AND (e.contact_id=ct.id OR (e.company_id=ct.company_id AND e.contact_id IS NULL)) WHERE l.campaign_id=? AND l.selected=1 AND ct.workspace_id=? ORDER BY e.collected_at DESC`, [campaignId,ctx.ws]);
   const byLead = new Map(); for (const e of evidence) {const {lead_id,...item}=e;const list=byLead.get(lead_id)||[];if(list.length<20)list.push(item);byLead.set(lead_id,list);}
@@ -155,7 +155,8 @@ export async function listDrafts(ctx, campaignId) {
     return {lead,draft};
   }));
   const pending = await ctx.db.get("SELECT status, last_error FROM jobs WHERE workspace_id=? AND type='drafts' AND campaign_id=? ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END, created_at DESC LIMIT 1", [ctx.ws, campaignId]);
-  return { items, total: items.length, approved: items.filter(x => x.draft?.approved).length, job: pending || null };
+  const future = await ctx.db.get("SELECT count(*) n FROM weekly_slots ws JOIN campaign_leads l ON l.campaign_id=ws.campaign_id AND l.contact_id=ws.contact_id WHERE ws.workspace_id=? AND ws.campaign_id=? AND ws.slot_date>? AND l.selected=1 AND l.decision='qualified'",[ctx.ws,campaignId,localView(Date.now(),c.config.schedule.timezone).date]);
+  return { items, total: items.length, approved: items.filter(x => x.draft?.approved).length, scheduled_future:Number(future.n), job: pending || null };
 }
 async function loadDraft(ctx, draftId) {
   const d = await ctx.db.get('SELECT d.* FROM drafts d JOIN campaigns c ON c.id=d.campaign_id WHERE d.id=? AND c.workspace_id=?', [draftId, ctx.ws]);

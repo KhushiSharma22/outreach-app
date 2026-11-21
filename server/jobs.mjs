@@ -109,19 +109,21 @@ export function registerHandlers(jobs, db, ctxFor) {
 // after downtime), and plans due follow-ups.
 export async function runScheduler(db, ctxFor, at = Date.now(), send, { weeklyOnly = false } = {}) {
   await db.run("UPDATE send_tasks SET status='unknown',status_reason='Worker stopped during sending. Check mailbox before retrying.',updated_at=? WHERE status='sending' AND updated_at<?",[new Date(at).toISOString(),new Date(at-15*60e3).toISOString()]);
-  for (const c of await db.all("SELECT c.id, c.workspace_id, v.data FROM campaigns c JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE c.status='active'")) {
+  for (const c of await db.all("SELECT c.id, c.workspace_id, c.status, v.data FROM campaigns c JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE c.status IN ('active','draft')")) {
     if (weeklyOnly && !await db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? LIMIT 1',[c.workspace_id,c.id])) continue;
     const ctx = ctxFor(c.workspace_id), s = json(c.data).schedule;
     try {
       const local = localView(at, s.timezone);
-      if (s.days.includes(local.weekday) && local.time >= scheduleTime(s,local.weekday) && !await db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date=?',[c.workspace_id,c.id,local.date]) && !await db.get('SELECT 1 FROM discovery_runs WHERE campaign_id=? AND occurrence_date=?', [c.id, local.date])) {
+      const needsDrafts = await db.get(`SELECT 1 FROM weekly_slots ws JOIN campaign_leads l ON l.campaign_id=ws.campaign_id AND l.contact_id=ws.contact_id LEFT JOIN drafts d ON d.lead_id=l.id WHERE ws.workspace_id=? AND ws.campaign_id=? AND ws.slot_date=? AND l.selected=1 AND l.decision='qualified' AND d.id IS NULL LIMIT 1`,[c.workspace_id,c.id,local.date]);
+      if (needsDrafts) await startDraftRun(ctx,c.id);
+      if (c.status === 'active' && s.days.includes(local.weekday) && local.time >= scheduleTime(s,local.weekday) && !await db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date=?',[c.workspace_id,c.id,local.date]) && !await db.get('SELECT 1 FROM discovery_runs WHERE campaign_id=? AND occurrence_date=?', [c.id, local.date])) {
         await startDiscovery(ctx, c.id, { trigger: 'schedule', occurrenceDate: local.date });
       }
-      await planFollowups(ctx, c.id);
+      if (c.status === 'active') await planFollowups(ctx, c.id);
     } catch (e) {
       await db.audit(c.workspace_id, c.id, 'scheduler.error', 'Scheduled work could not be created', { error: String(e.message) });
     }
-    try { await dispatchApproved(ctx,c.id,at,send); }
+    try { if(c.status === 'active') await dispatchApproved(ctx,c.id,at,send); }
     catch (e) { await db.audit(c.workspace_id,c.id,'scheduler.delivery_error','Scheduled delivery could not run',{error:String(e.message)}); }
   }
 }

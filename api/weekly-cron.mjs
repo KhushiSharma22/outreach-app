@@ -8,5 +8,6 @@ export default async function weeklyCron(req, res) {
  if (!secret || !timingSafeEqual(digest(req.headers.authorization || ''), digest(`Bearer ${secret}`))) { res.statusCode=401;res.end(JSON.stringify({error:'Unauthorized'}));return; }
  const app=await getApp();
  await app.scheduler({weeklyOnly:true});
+ await app.jobs.runDue(240e3);
  res.end(JSON.stringify({ok:true}));
 }

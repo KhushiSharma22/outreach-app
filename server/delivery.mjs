@@ -34,8 +34,8 @@ export async function blockers(ctx, c) {
   const sel = await ctx.db.all(`SELECT l.id, ct.email, ct.email to_email, ct.location contact_location, co.location company_location, ca.email casl_email, ca.basis casl_basis, ca.evidence casl_evidence, ca.source_url casl_source_url, ca.expires_on casl_expires_on, ca.invalidated_at casl_invalidated_at, s.reason suppressed, d.current_revision_id,
     EXISTS (SELECT 1 FROM approvals a JOIN draft_revisions r ON r.id=a.revision_id WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL AND a.hash=r.hash) approved FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id JOIN companies co ON co.id=ct.company_id
     LEFT JOIN casl_authorizations ca ON ca.workspace_id=ct.workspace_id AND ca.contact_id=ct.id
-    LEFT JOIN suppressions s ON s.workspace_id=ct.workspace_id AND s.email=ct.email LEFT JOIN drafts d ON d.lead_id=l.id
-    WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified'`, [c.id]);
+    LEFT JOIN suppressions s ON s.workspace_id=ct.workspace_id AND s.email=ct.email LEFT JOIN drafts d ON d.lead_id=l.id LEFT JOIN weekly_slots ws ON ws.workspace_id=ct.workspace_id AND ws.campaign_id=l.campaign_id AND ws.contact_id=ct.id
+    WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified' AND (ws.slot_date IS NULL OR ws.slot_date<=?)`, [c.id,localView(Date.now(),cfg.schedule.timezone).date]);
   if (!sel.length) out.push({ code: 'leads', message: 'Select at least one qualified prospect.' });
   const unapproved = sel.filter(l => !l.current_revision_id || !l.approved).length;
   const weekly = await ctx.db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? LIMIT 1',[ctx.ws,c.id]);
@@ -129,6 +129,22 @@ export async function setCampaignState(ctx, campaignId, action) {
   });
   if (action === 'resume') await planFollowups(ctx, c.id);
   return await loadCampaign(ctx, c.id);
+}
+
+// Hide the campaign, cancel all future work, and retain sent history and suppression records.
+export async function deleteCampaign(ctx,campaignId){
+ const c=await loadCampaign(ctx,campaignId),t=now();
+ await ctx.db.tx(async()=>{
+  await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
+  if(await ctx.db.get("SELECT 1 FROM send_tasks WHERE campaign_id=? AND status='sending'",[c.id]))throw conflict('sending_in_progress','An email is currently being sent. Wait for its outcome and try again.');
+  await ctx.db.run("UPDATE campaigns SET status='deleted',revision=revision+1,updated_at=? WHERE id=? AND workspace_id=?",[t,c.id,ctx.ws]);
+  await ctx.db.run("UPDATE send_tasks SET status='canceled',status_reason='Campaign deleted',updated_at=? WHERE campaign_id=? AND status IN ('pending','held')",[t,c.id]);
+  await ctx.db.run("UPDATE enrollments SET status='stopped',stop_reason='Campaign deleted',updated_at=? WHERE campaign_id=? AND status='active'",[t,c.id]);
+  await ctx.db.run("UPDATE sequences SET status='paused' WHERE campaign_id=? AND status='active'",[c.id]);
+  await ctx.db.run("UPDATE jobs SET status='dead',last_error='Campaign deleted',finished_at=? WHERE workspace_id=? AND campaign_id=? AND status='queued'",[t,ctx.ws,c.id]);
+  await ctx.db.audit(ctx.ws,c.id,'campaign.deleted','Campaign deleted and pending sends canceled; sent history retained',{},ctx.user?.id);
+ });
+ return {deleted:true};
 }
 
 // ---------- Send tasks ----------
