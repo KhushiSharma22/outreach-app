@@ -208,6 +208,9 @@ export function checkFtpDraft(draft, context, config) {
   if (/\b(every|each|all)\b[^.!?\n]{0,90}\b(training|tournament access|tournaments)\b/i.test(text)) errors.push('Training or tournament access must not be promised for every package.');
   return errors;
 }
+export function checkAttachmentReference(draft,attachments=[]) {
+  return !attachments.length && /\b(?:i(?:'ve| have)? attached|please (?:see|find) (?:the )?attached|(?:the|an|my) attachment|attached (?:is|you(?:'ll| will) find)|enclosed (?:is|you(?:'ll| will) find))\b/i.test(draft?.body||'') ? ['The email mentions an attachment, but no file is attached.'] : [];
+}
 export function checkDraft(draft, evidence, signature, allowedText = []) {
   const problems = [];
   if (!draft || typeof draft.subject !== 'string' || typeof draft.body !== 'string' || !Array.isArray(draft.evidence_ids)) return ['Invalid draft structure.'];

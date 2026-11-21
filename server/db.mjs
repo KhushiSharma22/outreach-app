@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS campaign_leads(id TEXT PRIMARY KEY, campaign_id TEXT 
 
 CREATE TABLE IF NOT EXISTS drafts(id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL REFERENCES campaigns(id), lead_id TEXT NOT NULL REFERENCES campaign_leads(id), current_revision_id TEXT, created_at TEXT NOT NULL, UNIQUE(lead_id));
 CREATE TABLE IF NOT EXISTS draft_revisions(id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES drafts(id), rev INTEGER NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, hash TEXT NOT NULL, origin TEXT NOT NULL, generator TEXT NOT NULL, evidence_ids TEXT NOT NULL, review_note TEXT, context_version_id TEXT NOT NULL, config_version INTEGER NOT NULL, created_by TEXT, created_at TEXT NOT NULL, UNIQUE(draft_id, rev));
+CREATE TABLE IF NOT EXISTS attachments(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), filename TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, content_base64 TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS draft_revision_attachments(revision_id TEXT NOT NULL REFERENCES draft_revisions(id), attachment_id TEXT NOT NULL REFERENCES attachments(id), PRIMARY KEY(revision_id, attachment_id));
+CREATE TABLE IF NOT EXISTS campaign_attachment_defaults(campaign_id TEXT PRIMARY KEY REFERENCES campaigns(id), attachment_id TEXT NOT NULL REFERENCES attachments(id));
+CREATE TABLE IF NOT EXISTS draft_rewrite_required(draft_id TEXT PRIMARY KEY REFERENCES drafts(id), reason TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES drafts(id), revision_id TEXT NOT NULL REFERENCES draft_revisions(id), hash TEXT NOT NULL, actor TEXT NOT NULL, via TEXT NOT NULL, created_at TEXT NOT NULL, invalidated_at TEXT, invalidation_reason TEXT);
 
 CREATE TABLE IF NOT EXISTS sequences(id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL UNIQUE REFERENCES campaigns(id), status TEXT NOT NULL DEFAULT 'draft', steps TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, current_version_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);

@@ -68,6 +68,13 @@ test('every screen renders from the API, and the full manual-send journey works 
   await settle(); await until(() => run('S.drafts && S.drafts.items.every(x=>x.draft)'));
   run('render()');
   assert.match(html(), /Emails that sound like you/);
+  assert.match(html(), /Edit with AI/);
+  assert.match(html(), /Attachments/);
+  run("$('email-subject').value=activeItem().draft.subject; $('email-body').value=activeItem().draft.body");
+  await run(`changeWriting('tone','Warm')`);
+  assert.match(html(), /Only .*recipient|Only [^<]+/);
+  assert.match(html(), /All campaign drafts/);
+  run('closeOverlay();render()');
   await run('openBulk()');
   await run('approveAll()');
   assert.equal(run('S.drafts.approved'), selectedCount);

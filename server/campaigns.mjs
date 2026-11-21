@@ -187,6 +187,14 @@ export async function updateCampaign(ctx, campaignId, body) {
         for(const task of tasks){const due=zonedToUtc(task.slot_date,scheduleTime(next.schedule,weekdayOf(task.slot_date)),next.schedule.timezone);await ctx.db.run('UPDATE send_tasks SET due_at=?,updated_at=? WHERE id=?',[new Date(Math.max(Date.parse(due),Date.now())).toISOString(),t,task.id]);}
       }
       if (JSON.stringify(next) !== JSON.stringify(c.config)) {
+        if(JSON.stringify(next.writing)!==JSON.stringify(c.config.writing)){
+          const affected=await ctx.db.all(`SELECT d.id,d.lead_id FROM drafts d WHERE d.campaign_id=? AND NOT EXISTS (SELECT 1 FROM send_tasks st WHERE st.lead_id=d.lead_id AND st.kind='initial' AND st.status IN ('sent','sending','unknown'))`,[c.id]);
+          for(const d of affected){
+            await ctx.db.run(`INSERT INTO draft_rewrite_required(draft_id,reason) VALUES(?,?) ON CONFLICT(draft_id) DO UPDATE SET reason=excluded.reason`,[d.id,'Campaign writing preferences changed']);
+            await ctx.db.run("UPDATE approvals SET invalidated_at=?,invalidation_reason=? WHERE draft_id=? AND invalidated_at IS NULL",[t,'Campaign writing preferences changed',d.id]);
+            await ctx.db.run("UPDATE send_tasks SET status='canceled',status_reason=?,updated_at=? WHERE lead_id=? AND status IN ('pending','held')",['Campaign writing preferences changed; review a new draft',t,d.lead_id]);
+          }
+        }
         const v = c.config_version + 1;
         await ctx.db.insert('campaign_config_versions', { id: id(), campaign_id: c.id, version: v, data: JSON.stringify(next), created_by: ctx.user?.id, created_at: t });
         await ctx.db.run('UPDATE campaigns SET config_version=? WHERE id=?', [v, c.id]);

@@ -10,7 +10,7 @@ const TIMEZONES = ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/Londo
 let S = {
   view: 'home', loading: true, fatal: '', session: null, context: null, summary: null, campaigns: [],
   cid: null, c: null, runs: [], runId: 'all', leads: null, lq: { decision: 'qualified', q: '', page: 0 }, leadId: null,
-  drafts: null, messageLead: null, weekDay: 'all', metrics: null, metricsError: '', events: [], insightTab: 'overview',
+  drafts: null, messageLead: null, weekDay: 'all', metrics: null, metricsError: '', events: [], insightTab: 'overview', personalWriting: {}, editorChat: {},
   tasks: null, taskFilter: 'open', taskCampaign: null,
   seq: null, seqActive: 0, seqRecipient: 0, seqLeads: [],
   contacts: null, cq: '', cpage: 0, imports: [], suppressions: [], lastImport: null,
@@ -73,7 +73,7 @@ async function navigate(next) {
 }
 async function openCampaign(id, view) {
   clearTimeout(pollTimer);
-  Object.assign(S, { cid: id, c: null, leads: null, drafts: null, metrics: null, metricsError: '', runs: [], sources: null, uploadPreview: null, uploadFile: null, uploadBusy: false, importResult: null, runId: 'all', lq: { decision: 'qualified', q: '', page: 0 }, messageLead: null, weekDay: 'all', insightTab: 'overview', error: '', modal: null });
+  Object.assign(S, { cid: id, c: null, leads: null, drafts: null, metrics: null, metricsError: '', personalWriting: {}, editorChat: {}, runs: [], sources: null, uploadPreview: null, uploadFile: null, uploadBusy: false, importResult: null, runId: 'all', lq: { decision: 'qualified', q: '', page: 0 }, messageLead: null, weekDay: 'all', insightTab: 'overview', error: '', modal: null });
   S.view = view || 'builder'; render(); window.scrollTo(0, 0);
   try {
     await refreshCampaign();
@@ -405,6 +405,8 @@ async function loadDrafts(autostart = false) {
 }
 async function moveLeadsToday(){try{const r=await Api.post(`/api/campaigns/${S.cid}/move-leads-today`,{},{idem:Api.key()});await loadDrafts(true);render();toast(`${r.moved} leads moved to ${r.date}; preparing drafts.`);}catch(e){fail(e);}}
 function activeItem() { const items = S.drafts?.items || []; return items.find(x => x.lead.id === S.messageLead) || items[0]; }
+function emailPreview(text){const inline=s=>esc(s).replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>');let out='',list=false;for(const line of String(text||'').split('\n')){const bullet=line.match(/^\s*[-•] +(.+)/);if(bullet){if(!list){out+='<ul>';list=true;}out+='<li>'+inline(bullet[1])+'</li>';}else{if(list){out+='</ul>';list=false;}out+=line.trim()?inline(line)+'<br>':'<br>';}}return out+(list?'</ul>':'');}
+function updateEmailPreview(){const el=$('email-preview');if(el)el.innerHTML=emailPreview($('email-body')?.value);}
 function studioView(c) {
   const D = S.drafts;
   if (!D) return loadingPanel('Loading drafts…');
@@ -413,35 +415,49 @@ function studioView(c) {
   const grouped = [...new Set(D.items.map(x=>x.lead.slot_date).filter(Boolean))].sort();
   const shown = S.weekDay && S.weekDay !== 'all' ? D.items.filter(x=>x.lead.slot_date===S.weekDay) : D.items;
   const item = shown.find(x=>x.lead.id===S.messageLead) || shown[0] || D.items[0]; S.messageLead = item.lead.id;
-  const l = item.lead, d = item.draft, w = c.config.writing, ctx = c.context.data;
+  const l = item.lead, d = item.draft, w = S.personalWriting[l.id] || c.config.writing, ctx = c.context.data;
   const evidence = d ? l.evidence.filter(e => d.evidence_ids.includes(e.id)) : [];
-  return `<div class="panel" style="margin-bottom:20px"><div class="panel-header"><div><h2>Emails that sound like you</h2><p>Today’s drafts are prepared from your campaign context and lead evidence. Future days are drafted on their assigned day.</p></div><button class="primary small" onclick="openBulk()" ${busy || !d ? 'disabled' : ''}>Review & approve all</button></div>
-  <div class="three-col">${[['Tone', 'tone', ['Conversational', 'Professional', 'Warm']], ['Length', 'length', ['Balanced', 'Concise']], ['Personalization angle', 'angle', ['Signal-led', 'Company-led']], ['Call to action', 'cta', ['Start a conversation', 'Book a meeting', 'Ask permission']]].map(([label, key, opts]) => `<div><label for="opt-${key}">${label}</label><select id="opt-${key}" onchange="changeWriting('${key}',this.value)" ${busy ? 'disabled' : ''}>${opts.map(o => `<option ${w[key] === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>`).join('')}</div>
+  const locked = ['sent','sending','unknown'].includes(l.send_status);
+  return `<div class="panel" style="margin-bottom:20px"><div class="panel-header"><div><h2>Emails that sound like you</h2><p>Today’s drafts are prepared from your campaign context and lead evidence. Future days are drafted on their assigned day.</p></div><button class="primary small" onclick="openBulk()" ${busy || S.busy || !d ? 'disabled' : ''}>Review & approve all</button></div>
+  <div class="three-col">${[['Tone', 'tone', ['Conversational', 'Professional', 'Warm']], ['Length', 'length', ['Balanced', 'Concise']], ['Personalization angle', 'angle', ['Signal-led', 'Company-led']], ['Call to action', 'cta', ['Start a conversation', 'Book a meeting', 'Ask permission']]].map(([label, key, opts]) => `<div><label for="opt-${key}">${label}</label><select id="opt-${key}" onchange="changeWriting('${key}',this.value)" ${busy||S.busy ? 'disabled' : ''}>${opts.map(o => `<option ${w[key] === o ? 'selected' : ''}>${o}</option>`).join('')}</select></div>`).join('')}</div><p class="helper">Choose whether each change applies to this recipient or the campaign. ${d ? '<button class="small ghost" onclick="$(\'editor-request\')?.scrollIntoView({behavior:\'smooth\',block:\'center\'});$(\'editor-request\')?.focus()">Ask AI to edit this email ↓</button>' : ''}</p>
   ${grouped.length ? `<div class="field" style="margin-top:16px"><label for="week-day">Review by scheduled day</label><select id="week-day" onchange="S.weekDay=this.value;S.messageLead=null;render()"><option value="all">All days · ${D.total} recipients</option>${grouped.map(day=>`<option value="${esc(day)}" ${S.weekDay===day?'selected':''}>${esc(day)} · ${D.items.filter(x=>x.lead.slot_date===day).length} recipients · ${D.items.filter(x=>x.lead.slot_date===day&&x.draft?.approved).length} approved</option>`).join('')}</select><p class="helper">Choose a day to review and approve its drafts, or choose all days to review the full week.</p></div>` : ''}<div class="approval-progress"><span style="width:${D.approved / D.total * 100}%"></span></div><span class="helper" id="approved-count">${D.approved} of ${D.total} drafts approved · approval applies to the exact wording; edits need fresh approval</span>
   ${busy ? `<div class="notice" style="margin-top:12px">${icon('spark')}<span>Writing drafts with ${esc(aiLabel())}… <span id="draft-progress">${D.items.filter(x => x.draft).length} of ${D.total} drafts ready</span></span></div>` : ''}
   ${D.job?.status === 'dead' ? `<div class="notice amber" style="margin-top:12px">${icon('shield')}<span>Drafting failed: ${esc(D.job.last_error)}. <button class="small" onclick="regenerate(false)">Retry</button></span></div>` : ''}</div>
   <div class="editor-layout"><aside class="recipient-list"><div class="list-label">${D.total} RECIPIENTS</div>${shown.slice(0, 8).map(x => recipientButton(x, l)).join('')}${shown.length > 8 ? `<div style="padding:15px"><label for="other-lead">All ${D.total} recipients</label><select id="other-lead" onchange="selectRecipient(this.value)">${shown.map(x => `<option value="${esc(x.lead.id)}" ${x.lead.id === l.id ? 'selected' : ''}>${esc(x.lead.name)}${x.draft?.approved ? ' ✓' : ''}</option>`).join('')}</select></div>` : ''}</aside>
   <section class="editor-main">${!d ? `<div class="empty">${busy ? '<div class="progress-track"></div>' : ''}<p>${busy ? 'Drafting this email…' : 'No draft yet.'}</p></div>` : `
     <div class="email-meta"><span>To</span>${esc(l.name)} &lt;${esc(l.email)}&gt; ${emailBadge(l.email_status)}</div><div class="email-meta"><span>From</span>${esc(ctx.sender)} &lt;${esc(ctx.email)}&gt; <small class="subtle">· ${c.config.delivery === 'smtp' ? 'sent through your connected mailbox after approval and launch' : 'you send this from your mailbox'}</small></div>
-    <div class="email-meta"><label for="email-subject" style="margin:0;color:var(--muted);min-width:38px">Subject</label><input id="email-subject" value="${esc(d.subject)}" onchange="saveDraftEdit()" ${l.send_status === 'sent' ? 'disabled' : ''}></div>
-    <textarea class="email-body" id="email-body" aria-label="Personalized email body" onchange="saveDraftEdit()" ${l.send_status === 'sent' ? 'disabled' : ''}>${esc(d.body)}</textarea>
+    <div class="email-meta"><label for="email-subject" style="margin:0;color:var(--muted);min-width:38px">Subject</label><input id="email-subject" value="${esc(d.subject)}" onchange="saveDraftEdit()" ${locked ? 'disabled' : ''}></div>
+    <textarea class="email-body" id="email-body" aria-label="Personalized email body" oninput="updateEmailPreview()" onchange="saveDraftEdit()" ${locked ? 'disabled' : ''}>${esc(d.body)}</textarea><p class="helper">Optional formatting: use **bold text** and start a line with “- ” for a bullet.</p><details class="email-preview"><summary>Preview formatted email</summary><div id="email-preview">${emailPreview(d.body)}</div></details>
     ${d.review_note ? `<div class="notice amber">${icon('shield')}${esc(d.review_note)}</div>` : ''}${d.stale ? `<div class="notice">${icon('spark')}Written with earlier campaign settings. <button class="small ghost" onclick="regenerate(true)">Regenerate outdated drafts</button></div>` : ''}
     <div class="evidence-box"><strong>${icon('spark')} Why this email is relevant</strong>${evidence.length ? evidence.map(e => `${esc(e.fact)} <small class="subtle">${e.event_date ? '· ' + esc(e.event_date) : ''} ${e.source_url ? `· <a href="${esc(e.source_url)}" target="_blank" rel="noopener noreferrer">source</a>` : ''}</small>`).join('<br>') : 'No signal evidence cited in this draft.'}<br>Matches: ${esc(l.role)} · ${l.score}/100 fit · ${esc(l.rationale)}</div>
-    <div class="rewrite-bar"><span class="helper" style="margin:0 3px 0 0">Refine</span><button onclick="rewrite('human')" ${l.send_status === 'sent' ? 'disabled' : ''}>${icon('spark')} More natural</button><button onclick="rewrite('short')" ${l.send_status === 'sent' ? 'disabled' : ''}>Shorter</button><button onclick="rewrite('direct')" ${l.send_status === 'sent' ? 'disabled' : ''}>More direct</button></div>
-    <div class="email-footer"><span class="helper">Revision ${d.rev} · ${esc(generatorLabel(d.generator))}</span>${l.send_status === 'sent' ? badge('Sent', 'green') : `<button id="approve-one" class="${d.approved ? 'ghost' : 'primary'} small" onclick="approveOne()">${d.approved ? '✓ Approved' : 'Approve email'}</button>`}</div>`}</section></div>`;
+    <div class="rewrite-bar"><span class="helper" style="margin:0 3px 0 0">Refine</span><button onclick="rewrite('human')" ${locked || S.busy ? 'disabled' : ''}>${icon('spark')} More natural</button><button onclick="rewrite('short')" ${locked || S.busy ? 'disabled' : ''}>Shorter</button><button onclick="rewrite('direct')" ${locked || S.busy ? 'disabled' : ''}>More direct</button></div>
+    <section class="editor-assistant"><strong>${icon('spark')} Edit with AI · ${esc(l.first_name)}</strong><p class="helper">Ask for a change to this email. The new wording needs your approval.</p><div class="editor-chat" aria-live="polite">${(S.editorChat[l.id]||[]).map(m=>`<div class="chat-line ${m.role==='you'?'chat-you':'chat-ai'}"><small>${m.role==='you'?'You':'Assistant'}</small><span>${esc(m.text)}</span></div>`).join('')}</div><label for="editor-request">Your instruction</label><textarea id="editor-request" maxlength="1000" placeholder="For example: make this warmer and ask if I can share a short overview" ${locked||S.busy?'disabled':''}></textarea><button class="small primary" onclick="editorChatSend()" ${locked||S.busy?'disabled':''}>${S.busy?'Updating…':'Update this email'}</button></section>
+    <section class="editor-attachments"><strong>Attachments</strong><p class="helper">Optional · PDF, PNG, JPG or TXT · up to 1 MB. Use sparingly for first outreach.</p>${(d.attachments||[]).map(a=>`<div class="attachment-row">${esc(a.filename)} · ${Math.ceil(a.size/1024)} KB <button class="small ghost" onclick="attachmentChoice(null)" ${locked||S.busy?'disabled':''}>Remove</button></div>`).join('')}<label class="button small" for="attachment-file">${d.attachments?.length?'Replace file':'Add file'}</label><input id="attachment-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.txt" style="display:none" onchange="attachmentChoice(this.files[0])" ${locked||S.busy?'disabled':''}>${c.config.delivery==='smtp'?'':'<p class="helper">For manual sending, attach the file yourself in your mailbox.</p>'}</section>
+    <div class="email-footer"><span class="helper">Revision ${d.rev} · ${esc(generatorLabel(d.generator))}</span>${locked ? badge(l.send_status === 'sent' ? 'Sent' : l.send_status === 'unknown' ? 'Check mailbox' : 'Sending', l.send_status === 'sent' ? 'green' : 'amber') : `<button id="approve-one" class="${d.approved ? 'ghost' : 'primary'} small" onclick="approveOne()" ${S.busy ? 'disabled' : ''}>${d.approved ? '✓ Approved' : 'Approve email'}</button>`}</div>`}</section></div>`;
 }
 function recipientButton(x, l) { return `<button class="${x.lead.id === l.id ? 'active' : ''}" onclick="selectRecipient('${esc(x.lead.id)}')"><span class="avatar">${initials(x.lead.name)}</span><span class="grow"><strong>${esc(x.lead.name)}</strong><small>${esc(x.lead.company)}</small></span>${x.draft?.approved ? icon('check') : ''}</button>`; }
 async function selectRecipient(id) { await saveDraftEdit(); S.messageLead = id; render(); }
-function changeWriting(key, value) {
+async function changeWriting(key, value) {
+  if(activeItem()?.draft && !await saveDraftEdit())return;
   const c = current(), n = S.drafts?.items.filter(x => x.draft && x.lead.send_status !== 'sent').length || 0;
   S.modal = 'regen'; S.modalData = { key, value, n }; render();
 }
-async function confirmWriting() {
+async function confirmWriting(scope) {
   const { key, value } = S.modalData; S.modal = null;
+  if(scope==='one'){
+    const item=activeItem(),saved=await saveDraftEdit();if(!saved)return;
+    const writing={...(S.personalWriting[item.lead.id]||current().config.writing),[key]:value};
+    S.busy=true;render();
+    try{const updated=await Api.post(`/api/drafts/${saved.id}/rewrites`,{revision_id:saved.revision_id,style:'preferences',writing});replaceDraft(item.lead.id,updated);S.personalWriting[item.lead.id]=writing;toast('This email was updated. Review and approve it again.');}catch(e){await loadDrafts().catch(()=>{});fail(e);}finally{S.busy=false;render();}
+    return;
+  }
   const w = { ...current().config.writing, [key]: value };
-  saveCampaign({ config: { writing: w } }, { now: true });
-  await flushSave();
-  await regenerate(true);
+  try {
+    await flushSave();
+    S.c=await Api.patch(`/api/campaigns/${S.cid}`,{revision:current().revision,config:{writing:w}});
+    S.personalWriting={};
+    await regenerate(true);
+  } catch(e) { fail(e);await refreshCampaign().catch(()=>{});render(); }
 }
 async function regenerate(stale) {
   try { await Api.post(`/api/campaigns/${S.cid}/draft-runs`, { regenerate: stale }, { idem: Api.key() }); S.drafts.job = { status: 'queued' }; render(); await loadDrafts(); render(); toast('Writing new drafts. Review and approve the new wording.'); } catch (e) { fail(e); }
@@ -466,11 +482,36 @@ async function rewrite(style) {
   const item = activeItem();
   if (!item?.draft) return;
   const saved = await saveDraftEdit(); if (!saved) return;
-  S.busy = true; toast('Rewriting…');
-  try { replaceDraft(item.lead.id, await Api.post(`/api/drafts/${saved.id}/rewrites`, { revision_id: saved.revision_id, style })); render(); toast('Rewrite ready for review.'); } catch (e) { fail(e); }
-  S.busy = false;
+  S.busy = true; render(); toast('Rewriting…');
+  try { replaceDraft(item.lead.id, await Api.post(`/api/drafts/${saved.id}/rewrites`, { revision_id: saved.revision_id, style })); render(); toast('Rewrite ready for review.'); } catch (e) { await loadDrafts().catch(()=>{});fail(e); }
+  S.busy = false; render();
+}
+async function editorChatSend(){
+  const item=activeItem(),instruction=$('editor-request')?.value.trim();
+  if(!item?.draft||!instruction)return toast('Describe the change you want.');
+  const saved=await saveDraftEdit();if(!saved)return;
+  const chat=S.editorChat[item.lead.id] ||= [];chat.push({role:'you',text:instruction});S.busy=true;render();
+  try{const history=chat.filter(m=>m.role==='you').slice(-7,-1).map(m=>m.text);const updated=await Api.post(`/api/drafts/${saved.id}/rewrites`,{revision_id:saved.revision_id,style:'custom',instruction,history});replaceDraft(item.lead.id,updated);chat.push({role:'assistant',text:'Updated this draft. Please review and approve the new wording.'});}
+  catch(e){await loadDrafts().catch(()=>{});chat.push({role:'assistant',text:(e.message||'The update failed. Please try again.')+' Review the current draft and approve it again if needed.'});}
+  finally{S.busy=false;render();}
+}
+async function attachmentChoice(file){
+  if(file && file.size>1_000_000)return toast('Choose a file up to 1 MB.');
+  if(!await saveDraftEdit())return;
+  S.modal='attachment';S.modalData={file:file||null};render();
+}
+async function applyAttachment(scope){
+  const file=S.modalData.file,item=activeItem();S.modal=null;
+  const saved=await saveDraftEdit();if(!saved)return;
+  S.busy=true;render();
+  try{
+    let payload=null;if(file){const encoded=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('Could not read file.'));reader.readAsDataURL(file);});payload={name:file.name,base64:encoded};}
+    const result=await Api.post(`/api/campaigns/${S.cid}/attachments`,{draft_id:saved.id,revision_id:saved.revision_id,scope,file:payload});
+    await loadDrafts();toast(`${result.changed} draft(s) updated${result.skipped?`; ${result.skipped} already sent or require mailbox review`:''}. Review and approve changes.`);
+  }catch(e){fail(e);}finally{S.busy=false;render();}
 }
 async function approveOne() {
+  if(S.busy)return;
   const item = activeItem(), saved = await saveDraftEdit();
   if (!saved) return;
   if (!saved.subject.trim() || !saved.body.trim()) return toast('Add a subject and message first.');
@@ -484,7 +525,7 @@ async function approveOne() {
     render(); toast('Email approved.');
   } catch (e) { fail(e); }
 }
-async function openBulk() { await saveDraftEdit(); S.modal = 'bulk'; render(); }
+async function openBulk() { if(S.busy)return;await saveDraftEdit(); S.modal = 'bulk'; render(); }
 async function approveAll() {
   if (!$('bulk-check').checked) return toast('Confirm you reviewed the drafts.');
   const items = S.drafts.items.filter(x => (S.weekDay==='all'||!S.weekDay||x.lead.slot_date===S.weekDay) && x.draft && !x.draft.approved).map(x => ({ draft_id: x.draft.id, revision_id: x.draft.revision_id }));
@@ -772,9 +813,10 @@ function overlay() {
   }
   if (S.modal === 'bulk') {
     const items = S.drafts.items.filter(x => x.draft && (S.weekDay==='all'||!S.weekDay||x.lead.slot_date===S.weekDay));
-    return modal('Approve campaign emails', `<div class="panel-header"><h2>Review your email batch</h2>${close}</div><p>${items.length} drafts for ${S.drafts.total} prospects. Approval applies to this exact wording; anything edited later needs fresh approval.</p><div class="approval-summary">${items.map(x => `<article class="approval-item"><h4>${esc(x.lead.name)} · ${esc(x.lead.company)} ${x.draft.approved ? '✓' : ''}</h4><strong style="font-size:12px">${esc(x.draft.subject)}</strong><pre>${esc(x.draft.body)}</pre>${x.draft.review_note ? `<p class="helper">${esc(x.draft.review_note)}</p>` : ''}</article>`).join('')}</div><label class="inline"><input id="bulk-check" type="checkbox">I have reviewed these emails.</label><div class="modal-actions"><button onclick="closeOverlay()">Keep editing</button><button class="primary" onclick="approveAll()">Approve all emails</button></div>`);
+    return modal('Approve campaign emails', `<div class="panel-header"><h2>Review your email batch</h2>${close}</div><p>${items.length} drafts for ${S.drafts.total} prospects. Approval applies to this exact wording; anything edited later needs fresh approval.</p><div class="approval-summary">${items.map(x => `<article class="approval-item"><h4>${esc(x.lead.name)} · ${esc(x.lead.company)} ${x.draft.approved ? '✓' : ''}</h4><strong style="font-size:12px">${esc(x.draft.subject)}</strong><pre>${esc(x.draft.body)}</pre>${x.draft.attachments?.length ? `<p class="helper">Attached: ${x.draft.attachments.map(a=>esc(a.filename)).join(', ')}</p>` : ''}${x.draft.review_note ? `<p class="helper">${esc(x.draft.review_note)}</p>` : ''}</article>`).join('')}</div><label class="inline"><input id="bulk-check" type="checkbox">I have reviewed these emails.</label><div class="modal-actions"><button onclick="closeOverlay()">Keep editing</button><button class="primary" onclick="approveAll()">Approve all emails</button></div>`);
   }
-  if (S.modal === 'regen') return modal('Change writing settings', `<div class="panel-header"><h2>Rewrite drafts?</h2>${close}</div><p>Changing ${esc(S.modalData.key)} to “${esc(S.modalData.value)}” writes new drafts for ${plural(S.modalData.n, 'recipient')} who haven’t been emailed. Their current approvals will no longer apply. Earlier versions are kept in history.</p><div class="modal-actions"><button onclick="closeOverlay();render()">Cancel</button><button class="primary" onclick="confirmWriting()">Rewrite drafts</button></div>`);
+  if (S.modal === 'regen') return modal('Change writing settings', `<div class="panel-header"><h2>Who should this change?</h2>${close}</div><p>Change ${esc(S.modalData.key)} to “${esc(S.modalData.value)}”. Changed drafts need fresh approval.</p><div class="modal-actions"><button onclick="closeOverlay();render()">Cancel</button><button onclick="confirmWriting('one')">Only ${esc(activeItem()?.lead.first_name||'this recipient')}</button><button class="primary" onclick="confirmWriting('all')">All campaign drafts</button></div><p>All updates the campaign default and rewrites eligible current drafts; future drafts use the new setting.</p>`);
+  if (S.modal === 'attachment') return modal('Change attachment', `<div class="panel-header"><h2>${S.modalData.file?'Attach '+esc(S.modalData.file.name):'Remove attachment'}?</h2>${close}</div><p>Changed drafts need fresh approval. Sent, sending and uncertain emails will be skipped.</p><div class="modal-actions"><button onclick="closeOverlay();render()">Cancel</button><button onclick="applyAttachment('one')">Only this email</button><button class="primary" onclick="applyAttachment('all')">All campaign emails</button></div><p>All also applies this file to future drafts in this campaign.</p>`);
   if (S.modal === 'delete-campaign') return modal('Delete campaign', `<div class="panel-header"><h2>Delete ${esc(S.modalData.name)}?</h2>${close}</div><p>Pending emails and follow-ups will be canceled. Sent history and opt-outs remain recorded. An email already being sent must finish before deletion.</p><div class="modal-actions"><button onclick="closeOverlay()">Keep campaign</button><button class="primary" onclick="deleteCampaign()">Delete campaign</button></div>`);
   if (S.modal === 'stop') return modal('Stop campaign', `<div class="panel-header"><h2>Stop this campaign?</h2>${close}</div><p>Stopping cancels queued emails and follow-ups and ends daily discovery. History is kept. This cannot be undone; pause instead if you may continue later.</p><div class="modal-actions"><button onclick="closeOverlay()">Cancel</button><button class="primary" onclick="campaignAction('stop')">Stop campaign</button></div>`);
   if (S.modal === 'confirm-sent') {
