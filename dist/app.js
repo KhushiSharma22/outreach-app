@@ -1047,3 +1047,19 @@ async function disconnectSmtp(){if(!confirm('Disconnect this mailbox? Future SMT
 
 // Refresh dashboard counters without disrupting text entry or rerendering the page.
 if(typeof setInterval==='function')setInterval(async()=>{if(S.auth || S.view!=='home' || document.hidden)return;try{const next=await Api.get('/api/summary');if(S.view!=='home')return;S.summary=next;for(const [id,key] of [['home-active','active_campaigns'],['home-review','awaiting_review'],['home-due','tasks_due']])if($(id))$(id).textContent=String(next[key]??0);}catch{}},30000);
+
+// Keep visible queue statuses current without repeatedly repainting unchanged drafts.
+let queueRefreshInFlight=false;
+if(typeof setInterval==='function')setInterval(async()=>{
+ if(S.auth||document.hidden||queueRefreshInFlight||!(S.view==='outbox'||(S.view==='tracking'&&S.insightTab==='queue')))return;
+ queueRefreshInFlight=true;
+ try{
+  const campaign=S.taskCampaign, filter=S.taskFilter;
+  const query=campaign ? `&campaign_id=${encodeURIComponent(campaign)}` : '';
+  const before=JSON.stringify({counts:S.tasks?.counts,items:S.tasks?.items?.map(t=>[t.id,t.status,t.status_reason,t.blocked_reason,t.due])});
+  const data=await Api.get(`/api/send-tasks?status=${encodeURIComponent(filter)}${query}`);
+  if(S.taskCampaign!==campaign || S.taskFilter!==filter || !(S.view==='outbox'||(S.view==='tracking'&&S.insightTab==='queue')))return;
+  const after=JSON.stringify({counts:data.counts,items:data.items?.map(t=>[t.id,t.status,t.status_reason,t.blocked_reason,t.due])});
+  S.tasks=data;if(before!==after&&!S.modal)render();
+ }catch{}finally{queueRefreshInFlight=false;}
+},5000);

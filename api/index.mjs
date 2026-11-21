@@ -23,7 +23,8 @@ export function restorePath(req) {
 }
 
 export function shouldScheduleAfterRequest(method, path, status) {
-  return method === 'POST' && path.split('?')[0] === '/api/approvals' && status >= 200 && status < 300;
+  const endpoint = path.split('?')[0];
+  return method === 'POST' && status >= 200 && status < 300 && (endpoint === '/api/approvals' || /^\/api\/send-tasks\/[^/]+\/retry-unknown$/.test(endpoint) || /^\/api\/campaigns\/[^/]+\/(launch|resume)$/.test(endpoint));
 }
 
 export default async function handler(req, res) {

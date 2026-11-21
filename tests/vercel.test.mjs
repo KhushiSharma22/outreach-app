@@ -97,6 +97,10 @@ test('successful approval requests trigger an immediate scheduling check', () =>
   assert.equal(mod.shouldScheduleAfterRequest('POST','/api/approvals',403),false);
   assert.equal(mod.shouldScheduleAfterRequest('GET','/api/approvals',200),false);
   assert.equal(mod.shouldScheduleAfterRequest('POST','/api/campaigns',200),false);
+  assert.equal(mod.shouldScheduleAfterRequest('POST','/api/send-tasks/test-id/retry-unknown',200),true);
+  assert.equal(mod.shouldScheduleAfterRequest('POST','/api/send-tasks/test-id/retry-unknown',409),false);
+  assert.equal(mod.shouldScheduleAfterRequest('POST','/api/campaigns/test-id/launch',200),true);
+  assert.equal(mod.shouldScheduleAfterRequest('POST','/api/campaigns/test-id/resume',200),true);
 });
 
 test('weekly scheduler requires the secret and accepts an authenticated request', async()=>{
