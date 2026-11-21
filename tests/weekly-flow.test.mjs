@@ -46,3 +46,25 @@ test('weekly research creates distinct day assignments, drafts, and approved-onl
   assert.equal((await db.get('SELECT status FROM send_tasks WHERE campaign_id=?',[c.id])).status,'canceled');
  }finally{Date.now=originalNow;await db.close();}
 });
+
+test('three per day reserves fifteen and automatically schedules remaining leads the following week',async()=>{
+ const db=await openDb({file:':memory:'}),originalNow=Date.now;process.env.AI_PROVIDER='offline';Date.now=()=>Date.parse('2026-11-23T01:00:00+05:30');
+ try{
+  const {workspace,user}=await seedWorkspace(db),queued=[];
+  const ctx={db,ws:workspace.id,user,publicUrl:'https://app.example.com',jobs:{enqueue:async(_ws,type,payload)=>{queued.push({type,payload});return{id:'test-job'};}}};
+  let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
+  c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{target:3,delivery:'smtp',schedule:{days:['Mon','Tue','Wed','Thu','Fri'],time:'09:00',timezone:'Asia/Kolkata'}}});
+  const csv='first_name,last_name,email,company,role,email_status,quality_score\n'+Array.from({length:30},(_,i)=>`Alex,Test,small${i}@example.com,Company${i},Founder,valid,95`).join('\n');
+  await seedResearch(ctx,c.id,{csv,available_on:'2026-11-23'});
+  const first=await startWeeklyDiscovery(ctx,c.id,Date.now());assert.equal(first.assigned,15);assert.equal(first.unassigned,15);
+  assert.deepEqual((await db.all('SELECT count(*) n FROM weekly_slots GROUP BY slot_date ORDER BY slot_date')).map(x=>Number(x.n)),[3,3,3,3,3]);
+  await executeDiscovery(ctx,first.run_id);await executeDraftRun(ctx,{campaign_id:c.id});
+  assert.equal((await listDrafts(ctx,c.id)).total,3);
+  await db.run("UPDATE campaigns SET status='active' WHERE id=?",[c.id]);
+  Date.now=()=>Date.parse('2026-11-30T00:15:00+05:30');
+  await runScheduler(db,()=>ctx,Date.now(),async()=>{}, {weeklyOnly:true});
+  const counts=await db.all("SELECT count(*) n FROM weekly_slots WHERE slot_date>='2026-11-30' GROUP BY slot_date ORDER BY slot_date");
+  assert.deepEqual(counts.map(x=>Number(x.n)),[3,3,3,3,3]);
+  assert.equal(Number((await db.get('SELECT count(*) n FROM weekly_slots')).n),30);
+ }finally{Date.now=originalNow;await db.close();}
+});

@@ -2,7 +2,8 @@
 // Long-running server: a poller runs due jobs. Serverless (Vercel): enqueue() only records that work is
 // waiting; the request handler runs it after the response via waitUntil, and a cron sweeps the rest.
 import { id, now } from './db.mjs';
-import { json, localView } from './lib.mjs';
+import { json, localView, addDays, weekdayOf } from './lib.mjs';
+import { startWeeklyDiscovery } from './lead-pools.mjs';
 import { executeDiscovery, failRun, startDiscovery } from './sourcing.mjs';
 import { executeDraftRun, startDraftRun, approveDrafts } from './drafts.mjs';
 import { dispatchApproved, onDraftApproved } from './delivery.mjs';
@@ -114,6 +115,13 @@ export async function runScheduler(db, ctxFor, at = Date.now(), send, { weeklyOn
     const ctx = ctxFor(c.workspace_id), s = json(c.data).schedule;
     try {
       const local = localView(at, s.timezone);
+      if(c.status==='active' && json(c.data).source==='research' && await db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? LIMIT 1',[c.workspace_id,c.id])) {
+        const istDate=localView(at,'Asia/Kolkata').date;
+        const offset=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].indexOf(weekdayOf(istDate));
+        const monday=addDays(istDate,-offset),sunday=addDays(monday,6);
+        const reserved=await db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date>=? AND slot_date<=? LIMIT 1',[c.workspace_id,c.id,monday,sunday]);
+        if(!reserved) { try { await startWeeklyDiscovery(ctx,c.id,at); } catch(e) { if(!['no_new_contacts','weekly_full','discovery_running'].includes(e.code)) throw e; } }
+      }
       const needsDrafts = await db.get(`SELECT 1 FROM weekly_slots ws JOIN campaign_leads l ON l.campaign_id=ws.campaign_id AND l.contact_id=ws.contact_id LEFT JOIN drafts d ON d.lead_id=l.id WHERE ws.workspace_id=? AND ws.campaign_id=? AND ws.slot_date=? AND l.selected=1 AND l.decision='qualified' AND d.id IS NULL LIMIT 1`,[c.workspace_id,c.id,local.date]);
       if (needsDrafts) await startDraftRun(ctx,c.id);
       if (c.status === 'active' && s.days.includes(local.weekday) && local.time >= scheduleTime(s,local.weekday) && !await db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date=?',[c.workspace_id,c.id,local.date]) && !await db.get('SELECT 1 FROM discovery_runs WHERE campaign_id=? AND occurrence_date=?', [c.id, local.date])) {
