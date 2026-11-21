@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {openDb} from '../server/db.mjs';
 import {seedWorkspace} from '../server/app.mjs';
 import {createCampaign,updateCampaign} from '../server/campaigns.mjs';
-import {seedResearch,startWeeklyDiscovery} from '../server/lead-pools.mjs';
+import {seedResearch,startWeeklyDiscovery,moveUpcomingToToday} from '../server/lead-pools.mjs';
 import {executeDiscovery} from '../server/sourcing.mjs';
 import {executeDraftRun,listDrafts,approveDrafts} from '../server/drafts.mjs';
 import {launch,deleteCampaign} from '../server/delivery.mjs';
@@ -107,4 +107,25 @@ test('Saturday at 10:10pm is usable today even when weekdays are also selected',
   await seedResearch(ctx,c.id,{csv,available_on:'2026-11-21'});
   const r=await startWeeklyDiscovery(ctx,c.id,Date.now());assert.equal(r.first_date,'2026-11-21');assert.equal(r.assigned,3);
  }finally{Date.now=originalNow;await db.close();}
+});
+
+
+test('deleted unused reservation can be released and future leads moved to selected Saturday',async()=>{
+ const db=await openDb({file:':memory:'}),old=Date.now;process.env.AI_PROVIDER='offline';Date.now=()=>Date.parse('2026-11-21T22:00:00+05:30');
+ try{
+  const {workspace,user}=await seedWorkspace(db),ctx={db,ws:workspace.id,user,publicUrl:'https://app.example.com',jobs:{enqueue:async()=>({id:'job'})}};
+  let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
+  c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{target:3,schedule:{days:['Mon','Sat'],time:'22:10',timezone:'Asia/Kolkata'}}});
+  const previous=await createCampaign(ctx,{name:'Deleted campaign'});await db.run("UPDATE campaigns SET status='deleted' WHERE id=?",[previous.id]);
+  await db.insert('research_days',{workspace_id:ctx.ws,day:'2026-11-21',campaign_id:previous.id,allocated:3});
+  const csv='first_name,last_name,email,company,role,email_status,quality_score\nAlex,Test,movetoday@example.com,Company,Founder,valid,95';
+  await seedResearch(ctx,c.id,{csv,available_on:'2026-11-21'});
+  // Place the lead in a future slot, as the earlier version did.
+  const first=await startWeeklyDiscovery(ctx,c.id,Date.parse('2026-11-22T01:00:00+05:30'));
+  await executeDiscovery(ctx,first.run_id);
+  assert.equal((await listDrafts(ctx,c.id)).scheduled_future,1);
+  const r=await moveUpcomingToToday(ctx,c.id,Date.now());assert.equal(r.moved,1);assert.equal(r.date,'2026-11-21');
+  assert.equal((await db.get('SELECT campaign_id FROM research_days WHERE workspace_id=? AND day=?',[ctx.ws,'2026-11-21'])).campaign_id,c.id);
+  await executeDraftRun(ctx,{campaign_id:c.id});assert.equal((await listDrafts(ctx,c.id)).total,1);
+ }finally{Date.now=old;await db.close();}
 });

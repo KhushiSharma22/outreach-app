@@ -399,11 +399,12 @@ async function loadDrafts(autostart = false) {
     poll(async () => { if (S.cid !== cid || !['builder', 'emails'].includes(S.view)) return false; const n = await Api.get(`/api/campaigns/${cid}/drafts`); S.drafts = n; const busy = n.job && ['queued', 'running'].includes(n.job.status); if (!busy) render(); else { const el = $('draft-progress'); if (el) el.textContent = `${n.items.filter(x => x.draft).length} of ${n.total} drafts ready`; } return busy; }, 1200);
   }
 }
+async function moveLeadsToday(){try{const r=await Api.post(`/api/campaigns/${S.cid}/move-leads-today`,{},{idem:Api.key()});await loadDrafts(true);render();toast(`${r.moved} leads moved to ${r.date}; preparing drafts.`);}catch(e){fail(e);}}
 function activeItem() { const items = S.drafts?.items || []; return items.find(x => x.lead.id === S.messageLead) || items[0]; }
 function studioView(c) {
   const D = S.drafts;
   if (!D) return loadingPanel('Loading drafts…');
-  if (!D.total) return D.scheduled_future ? `<div class="panel empty"><h3>No drafts due today</h3><p>${D.scheduled_future} prospects are planned for upcoming days. Their drafts will be prepared on the assigned day.</p></div>` : `<div class="panel empty"><h3>No qualified leads selected</h3><p>Go back to lead review to select prospects.</p></div>`;
+  if (!D.total) return D.scheduled_future ? `<div class="panel empty"><h3>No drafts due today</h3><p>${D.scheduled_future} prospects are planned for upcoming days. Their drafts will be prepared on the assigned day.</p><button class="primary" onclick="moveLeadsToday()">Move available leads to today</button><p class="helper">Uses today’s available capacity; drafts still require review and campaign launch.</p></div>` : `<div class="panel empty"><h3>No qualified leads selected</h3><p>Go back to lead review to select prospects.</p></div>`;
   const busy = D.job && ['queued', 'running'].includes(D.job.status);
   const grouped = [...new Set(D.items.map(x=>x.lead.slot_date).filter(Boolean))].sort();
   const shown = S.weekDay && S.weekDay !== 'all' ? D.items.filter(x=>x.lead.slot_date===S.weekDay) : D.items;
