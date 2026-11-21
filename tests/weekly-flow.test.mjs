@@ -20,7 +20,9 @@ test('weekly research creates distinct day assignments, drafts, and approved-onl
   assert.equal((await seedResearch(ctx,c.id,{csv,available_on:'2026-11-23'})).ready,150);
   const started=await startWeeklyDiscovery(ctx,c.id,Date.parse('2026-11-23T00:30:00+05:30'));
   assert.equal(started.assigned,150);
-  await assert.rejects(updateCampaign(ctx,c.id,{revision:c.revision,config:{schedule:{time:'10:00'}}}),e=>e.code==='weekly_schedule_locked');
+  await assert.rejects(updateCampaign(ctx,c.id,{revision:c.revision,config:{schedule:{days:['Tue']}}}),e=>e.code==='weekly_schedule_locked');
+  c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{schedule:{time:'10:00'}}});
+  assert.equal(c.config.schedule.time,'10:00');
   assert.deepEqual((await db.all('SELECT slot_date,count(*) n FROM weekly_slots GROUP BY slot_date ORDER BY slot_date')).map(r=>Number(r.n)),[30,30,30,30,30]);
   await executeDiscovery(ctx,started.run_id);
   let draftJobs=0;ctx.jobs.enqueue=async(_ws,type)=>{if(type==='drafts')draftJobs++;return{id:'test-job'};};
@@ -32,8 +34,11 @@ test('weekly research creates distinct day assignments, drafts, and approved-onl
   await db.insert('mailboxes',{workspace_id:ctx.ws,sender:user.email,postal_address:'123 Test Street',credentials:'test only',updated_at:new Date().toISOString()});
   const launched=await launch(ctx,c.id,{revision:c.revision});assert.equal(launched.created,1);
   const task=await db.get('SELECT st.due_at,ws.slot_date FROM send_tasks st JOIN weekly_slots ws ON ws.contact_id=st.contact_id WHERE st.workspace_id=?',[ctx.ws]);
-  assert.ok(Date.parse(task.due_at)>=Date.parse(task.slot_date+'T03:30:00Z'));
+  assert.ok(Date.parse(task.due_at)>=Date.parse(task.slot_date+'T04:30:00Z'));
   assert.equal(Number((await db.get('SELECT count(*) n FROM send_tasks WHERE workspace_id=?',[ctx.ws])).n),1);
+  c=await updateCampaign(ctx,c.id,{revision:launched.campaign.revision,config:{schedule:{time:'13:00'}}});
+  const movedTask=await db.get('SELECT due_at FROM send_tasks WHERE campaign_id=?',[c.id]);
+  assert.equal(movedTask.due_at,task.slot_date+'T07:30:00.000Z');
    Date.now=()=>Date.parse('2026-11-24T01:00:00+05:30');
   await executeDraftRun(ctx,{campaign_id:c.id});
   assert.equal((await listDrafts(ctx,c.id)).total,60);

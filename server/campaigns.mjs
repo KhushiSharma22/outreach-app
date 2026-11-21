@@ -1,6 +1,6 @@
 // Workspace company context (versioned) and campaign configuration (versioned).
 import { id, now } from './db.mjs';
-import { AppError, notFound, conflict, invalid, json, EMAIL_RE, validTimezone, WEEKDAYS, localView } from './lib.mjs';
+import { AppError, notFound, conflict, invalid, json, EMAIL_RE, validTimezone, WEEKDAYS, localView, weekdayOf, zonedToUtc } from './lib.mjs';
 import { CATALOG } from './ai.mjs';
 
 export const DEFAULT_CONTEXT = {
@@ -159,6 +159,9 @@ export async function updateCampaign(ctx, campaignId, body) {
   if (c.status === 'stopped') throw conflict('campaign_stopped', 'Stopped campaigns cannot be edited.');
   const t = now(), changes = [];
   await ctx.db.tx(async () => {
+    await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
+    const latest = await ctx.db.get('SELECT revision FROM campaigns WHERE id=? AND workspace_id=?',[c.id,ctx.ws]);
+    if (!onlyStep && latest.revision !== body.revision) throw conflict('stale_revision','This campaign changed since you loaded it. Reload to see the latest version.',{revision:latest.revision});
     if ('step' in body) await ctx.db.run('UPDATE campaigns SET step=? WHERE id=?', [Math.min(5, Math.max(0, +body.step || 0)), c.id]);
     if ('name' in body) {
       const name = String(body.name || '').trim().slice(0, 120);
@@ -174,8 +177,15 @@ export async function updateCampaign(ctx, campaignId, body) {
       if (c.status !== 'draft' && c.config.approval === 'rules' && Object.keys(body.config).some(k => k !== 'approval') ) throw invalid('Switch to daily review before changing an automatically approved campaign.');
       if (c.status !== 'draft' && body.config.approval === 'rules' && c.config.approval !== 'rules') throw invalid('Automatic approval must be authorised when launching a new campaign.');
       const next = normalizeConfig(c.config, body.config);
-      if ((JSON.stringify(next.schedule) !== JSON.stringify(c.config.schedule) || next.target !== c.config.target) && await ctx.db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date>=? LIMIT 1',[ctx.ws,c.id,localView(Date.now(),c.config.schedule.timezone).date])) throw conflict('weekly_schedule_locked', 'The schedule and daily target are locked while this week has reserved leads. Set them before preparing the batch.');
-      if (c.status !== 'draft') { const e = scheduleErrors(next.schedule); if (e.length) throw invalid(e.join(' '), { schedule: e }); }
+      const scheduleChanged = JSON.stringify(next.schedule) !== JSON.stringify(c.config.schedule);
+      const reserved = await ctx.db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date>=? LIMIT 1',[ctx.ws,c.id,localView(Date.now(),c.config.schedule.timezone).date]);
+      if (reserved && (JSON.stringify(next.schedule.days)!==JSON.stringify(c.config.schedule.days) || next.schedule.timezone!==c.config.schedule.timezone || next.target!==c.config.target)) throw conflict('weekly_schedule_locked', 'Days, timezone and daily target are locked while leads are reserved. Sending times can still be changed.');
+      if (scheduleChanged && await ctx.db.get("SELECT 1 FROM send_tasks WHERE workspace_id=? AND campaign_id=? AND status='sending'",[ctx.ws,c.id])) throw conflict('sending_in_progress','An email is currently being sent. Wait for its outcome before changing the schedule.');
+      if (c.status !== 'draft' || scheduleChanged) { const e = scheduleErrors(next.schedule); if (e.length) throw invalid(e.join(' '), { schedule: e }); }
+      if (scheduleChanged && reserved) {
+        const tasks=await ctx.db.all("SELECT st.id,ws.slot_date FROM send_tasks st JOIN weekly_slots ws ON ws.workspace_id=st.workspace_id AND ws.campaign_id=st.campaign_id AND ws.contact_id=st.contact_id WHERE st.workspace_id=? AND st.campaign_id=? AND st.status IN ('pending','held') AND ws.slot_date>=?",[ctx.ws,c.id,localView(Date.now(),next.schedule.timezone).date]);
+        for(const task of tasks){const due=zonedToUtc(task.slot_date,scheduleTime(next.schedule,weekdayOf(task.slot_date)),next.schedule.timezone);await ctx.db.run('UPDATE send_tasks SET due_at=?,updated_at=? WHERE id=?',[new Date(Math.max(Date.parse(due),Date.now())).toISOString(),t,task.id]);}
+      }
       if (JSON.stringify(next) !== JSON.stringify(c.config)) {
         const v = c.config_version + 1;
         await ctx.db.insert('campaign_config_versions', { id: id(), campaign_id: c.id, version: v, data: JSON.stringify(next), created_by: ctx.user?.id, created_at: t });

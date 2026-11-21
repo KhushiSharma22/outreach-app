@@ -206,7 +206,7 @@ function flushSave() {
       setSaving('All changes saved');
     } catch (e) {
       setSaving('');
-      if (e.status === 409) { toast('This campaign changed elsewhere. Reloaded the latest version.'); await refreshCampaign(); render(); }
+      if (e.status === 409) { toast(e.code === 'stale_revision' ? 'This campaign changed elsewhere. Reloaded the latest version.' : e.message); await refreshCampaign(); render(); }
       else { S.error = e.message; render(); }
     }
   });
