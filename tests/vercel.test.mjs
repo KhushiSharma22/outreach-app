@@ -14,20 +14,21 @@ process.env.OPERATOR_EMAILS = 'maya@northstar.example'; // pilot: only operators
 const pending = [];
 // Vercel's request context, as read by waitUntil().
 globalThis[Symbol.for('@vercel/request-context')] = { get: () => ({ waitUntil: p => pending.push(p) }) };
-let tdb, server, base, mod, cron, app, bufferBodies = false;
+let tdb, server, base, mod, cron, weeklyCron, app, bufferBodies = false;
 
 before(async () => {
   tdb = await testDatabase();
   if (tdb.databaseUrl) process.env.DATABASE_URL = tdb.databaseUrl; else process.env.DB_FILE = ':memory:';
   mod = await import('../api/index.mjs');
   cron = (await import('../api/cron.mjs')).default;
+  weeklyCron = (await import('../api/weekly-cron.mjs')).default;
   app = await mod.getApp();
   server = createServer(async (req, res) => {
     if (bufferBodies && req.method !== 'GET') { // simulate a platform that pre-reads the body
       const chunks = []; for await (const c of req) chunks.push(c);
       req.body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
     }
-    return req.url.startsWith('/api/cron') ? cron(req, res) : mod.default(req, res);
+    return req.url.startsWith('/api/weekly-cron') ? weeklyCron(req,res) : req.url.startsWith('/api/cron') ? cron(req, res) : mod.default(req, res);
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -96,4 +97,11 @@ test('successful approval requests trigger an immediate scheduling check', () =>
   assert.equal(mod.shouldScheduleAfterRequest('POST','/api/approvals',403),false);
   assert.equal(mod.shouldScheduleAfterRequest('GET','/api/approvals',200),false);
   assert.equal(mod.shouldScheduleAfterRequest('POST','/api/campaigns',200),false);
+});
+
+test('weekly scheduler requires the secret and accepts an authenticated request', async()=>{
+ assert.equal((await fetch(`${base}/api/weekly-cron`)).status,401);
+ assert.equal((await fetch(`${base}/api/weekly-cron`,{headers:{authorization:'Bearer wrong'}})).status,401);
+ const response=await fetch(`${base}/api/weekly-cron`,{headers:{authorization:'Bearer test-cron-secret'}});
+ assert.equal(response.status,200);assert.equal((await response.json()).ok,true);
 });

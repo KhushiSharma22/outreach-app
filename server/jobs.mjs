@@ -107,9 +107,10 @@ export function registerHandlers(jobs, db, ctxFor) {
 
 // Creates at most one discovery occurrence per campaign per local day, only for today (no backlog
 // after downtime), and plans due follow-ups.
-export async function runScheduler(db, ctxFor, at = Date.now(), send) {
+export async function runScheduler(db, ctxFor, at = Date.now(), send, { weeklyOnly = false } = {}) {
   await db.run("UPDATE send_tasks SET status='unknown',status_reason='Worker stopped during sending. Check mailbox before retrying.',updated_at=? WHERE status='sending' AND updated_at<?",[new Date(at).toISOString(),new Date(at-15*60e3).toISOString()]);
   for (const c of await db.all("SELECT c.id, c.workspace_id, v.data FROM campaigns c JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE c.status='active'")) {
+    if (weeklyOnly && !await db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? LIMIT 1',[c.workspace_id,c.id])) continue;
     const ctx = ctxFor(c.workspace_id), s = json(c.data).schedule;
     try {
       const local = localView(at, s.timezone);

@@ -258,7 +258,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
     if (url.pathname.startsWith('/api/')) log('request', { method: req.method, path: url.pathname, status: res.statusCode, ms: Date.now() - started });
   };
   const server = createServer(handle);
-  const scheduler = () => runScheduler(db, ws => ctxFor(ws));
+  const scheduler = (options = {}) => runScheduler(db, ws => ctxFor(ws), Date.now(), undefined, options);
 
   if (workers && !serverless) await jobs.start({ scheduler, scheduleMs: +(process.env.SCHEDULER_INTERVAL_MS || 30000) });
   return { server, handle, scheduler, db, jobs, ctxFor, devToken, auth, publicUrl, close: async () => { jobs.stop(); const closed = new Promise(r => server.close(r)); server.closeAllConnections(); await closed; await db.close(); } };

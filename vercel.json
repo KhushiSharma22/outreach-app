@@ -8,11 +8,14 @@
     },
     "api/cron.mjs": {
       "maxDuration": 300
+    },
+    "api/weekly-cron.mjs": {
+      "maxDuration": 300
     }
   },
   "rewrites": [
     {
-      "source": "/api/:path((?!cron$|index$).*)",
+      "source": "/api/:path((?!cron$|weekly-cron$|index$).*)",
       "destination": "/api/index?__path=api/:path"
     },
     {
@@ -55,5 +58,12 @@
   ],
   "regions": [
     "sin1"
-  ]
+  ],
+  "schedules": {
+    "weekly-smtp": {
+      "schedule": "*/15 * * * *",
+      "path": "/api/weekly-cron",
+      "requestMethod": "GET"
+    }
+  }
 }
