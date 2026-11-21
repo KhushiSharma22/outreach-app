@@ -88,3 +88,12 @@ test('cron requires the secret, then runs the scheduler and requeues jobs cut of
   assert.equal(r.status, 200);
   assert.equal((await app.db.get('SELECT status FROM jobs WHERE id=?', [job.id])).status, 'done');
 });
+
+
+test('successful approval requests trigger an immediate scheduling check', () => {
+  assert.equal(mod.shouldScheduleAfterRequest('POST','/api/approvals',200),true);
+  assert.equal(mod.shouldScheduleAfterRequest('POST','/api/approvals?foo=1',200),true);
+  assert.equal(mod.shouldScheduleAfterRequest('POST','/api/approvals',403),false);
+  assert.equal(mod.shouldScheduleAfterRequest('GET','/api/approvals',200),false);
+  assert.equal(mod.shouldScheduleAfterRequest('POST','/api/campaigns',200),false);
+});

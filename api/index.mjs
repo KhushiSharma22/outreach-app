@@ -22,6 +22,10 @@ export function restorePath(req) {
   req.url = path + (u.searchParams.size ? '?' + u.searchParams : '');
 }
 
+export function shouldScheduleAfterRequest(method, path, status) {
+  return method === 'POST' && path.split('?')[0] === '/api/approvals' && status >= 200 && status < 300;
+}
+
 export default async function handler(req, res) {
   restorePath(req);
   let app;
@@ -40,7 +44,7 @@ export default async function handler(req, res) {
   // checked here (at most once a minute per instance) so schedules don't depend on the cron alone.
   const kicked = app.jobs.takeKick();
   pendingKick ||= kicked;
-  if (Date.now() - lastSchedule > SCHEDULE_EVERY_MS) { lastSchedule = Date.now(); pendingSchedule = true; }
+  if (shouldScheduleAfterRequest(req.method, req.url, res.statusCode) || Date.now() - lastSchedule > SCHEDULE_EVERY_MS) { lastSchedule = Date.now(); pendingSchedule = true; }
   if ((pendingKick || pendingSchedule) && !background) {
     background = (async () => {
       while (pendingKick || pendingSchedule) {
