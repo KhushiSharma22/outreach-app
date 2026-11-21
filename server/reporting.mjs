@@ -14,10 +14,10 @@ export async function campaignMetrics(ctx, campaignId) {
   const since = new Date(Date.now() - 8 * 864e5).toISOString();
   const todayWeekly = await db.get(`SELECT count(*) total, sum(CASE WHEN d.current_revision_id IS NOT NULL THEN 1 ELSE 0 END) drafted, sum(CASE WHEN d.current_revision_id IS NOT NULL AND d.current_revision_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL) THEN 1 ELSE 0 END) awaiting FROM weekly_slots ws JOIN campaign_leads l ON l.campaign_id=ws.campaign_id AND l.contact_id=ws.contact_id LEFT JOIN drafts d ON d.lead_id=l.id WHERE ws.workspace_id=? AND ws.campaign_id=? AND ws.slot_date=? AND l.selected=1 AND l.decision='qualified'`,[ctx.ws,id,today]);
   const slots = await db.get('SELECT count(*) total FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date=?',[ctx.ws,id,today]);
-  const nextSlot = await db.get('SELECT min(slot_date) day FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date>?',[ctx.ws,id,today]);
+  const nextSlot = await db.get('SELECT min(slot_date) AS next_date FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date>?',[ctx.ws,id,today]);
   const sentSeries=byDay(await db.all('SELECT sent_at t FROM messages WHERE campaign_id=? AND sent_at>=?', [id,since]));
   return {
-    daily: {date:today,timezone:tz,planned:Number(todayWeekly.total||0),reserved:Number(slots.total||0),next_date:nextSlot.day||null,drafted:Number(todayWeekly.drafted||0),awaiting:Number(todayWeekly.awaiting||0),sent_today:sentSeries[6],sent_yesterday:sentSeries[5]},
+    daily: {date:today,timezone:tz,planned:Number(todayWeekly.total||0),reserved:Number(slots.total||0),next_date:nextSlot.next_date||null,drafted:Number(todayWeekly.drafted||0),awaiting:Number(todayWeekly.awaiting||0),sent_today:sentSeries[6],sent_yesterday:sentSeries[5]},
     definitions: { sent: 'SMTP acceptance or manual confirmation; inbox delivery is not verified.', reply_rate: 'Unique contacts with a recorded reply ÷ unique contacts emailed.', meetings: 'Recorded manually.' },
     candidates: await n(db, "SELECT coalesce(sum(candidates),0) n FROM discovery_runs WHERE campaign_id=? AND status='completed'", [id]),
     qualified: await n(db, "SELECT count(*) n FROM campaign_leads WHERE campaign_id=? AND decision='qualified'", [id]),

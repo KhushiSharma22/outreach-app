@@ -10,7 +10,7 @@ const TIMEZONES = ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/Londo
 let S = {
   view: 'home', loading: true, fatal: '', session: null, context: null, summary: null, campaigns: [],
   cid: null, c: null, runs: [], runId: 'all', leads: null, lq: { decision: 'qualified', q: '', page: 0 }, leadId: null,
-  drafts: null, messageLead: null, weekDay: 'all', metrics: null, events: [], insightTab: 'overview',
+  drafts: null, messageLead: null, weekDay: 'all', metrics: null, metricsError: '', events: [], insightTab: 'overview',
   tasks: null, taskFilter: 'open', taskCampaign: null,
   seq: null, seqActive: 0, seqRecipient: 0, seqLeads: [],
   contacts: null, cq: '', cpage: 0, imports: [], suppressions: [], lastImport: null,
@@ -73,7 +73,7 @@ async function navigate(next) {
 }
 async function openCampaign(id, view) {
   clearTimeout(pollTimer);
-  Object.assign(S, { cid: id, c: null, leads: null, drafts: null, metrics: null, runs: [], sources: null, uploadPreview: null, uploadFile: null, uploadBusy: false, importResult: null, runId: 'all', lq: { decision: 'qualified', q: '', page: 0 }, messageLead: null, weekDay: 'all', insightTab: 'overview', error: '', modal: null });
+  Object.assign(S, { cid: id, c: null, leads: null, drafts: null, metrics: null, metricsError: '', runs: [], sources: null, uploadPreview: null, uploadFile: null, uploadBusy: false, importResult: null, runId: 'all', lq: { decision: 'qualified', q: '', page: 0 }, messageLead: null, weekDay: 'all', insightTab: 'overview', error: '', modal: null });
   S.view = view || 'builder'; render(); window.scrollTo(0, 0);
   try {
     await refreshCampaign();
@@ -95,7 +95,11 @@ async function loadViewData() {
   if (S.view === 'emails') await loadDrafts(true);
   if (S.view === 'tracking') {
     const tab = S.insightTab;
-    if (tab === 'overview') { const [m, ev] = await Promise.all([Api.get(`/api/campaigns/${c.id}/metrics`), Api.get(`/api/campaigns/${c.id}/events?limit=8`)]); S.metrics = m; S.events = ev.items; await loadRuns(); }
+    if (tab === 'overview') {
+      S.metricsError = '';
+      try { const [m, ev] = await Promise.all([Api.get(`/api/campaigns/${c.id}/metrics`), Api.get(`/api/campaigns/${c.id}/events?limit=8`)]); S.metrics = m; S.events = ev.items; await loadRuns(); }
+      catch (e) { S.metrics = null; S.metricsError = e.message || 'Please try again.'; throw e; }
+    }
     if (tab === 'leads') { await loadRuns(); await loadLeads(); }
     if (tab === 'queue') { S.taskCampaign = c.id; await loadTasks(); }
     if (tab === 'activity') S.events = (await Api.get(`/api/campaigns/${c.id}/events?limit=50`)).items;
@@ -541,7 +545,7 @@ function trackingView() {
   return `<button class="back-link" onclick="navigate('campaigns')">← All campaigns</button><div class="heading"><div><div class="inline"><span class="eyebrow">CAMPAIGN INSIGHTS</span>${badge(st[0], st[1])}</div><h1>${esc(c.name)}</h1><p>${c.config.target} leads/day · ${esc(scheduleSummary(c.config.schedule))} · ${c.config.approval==='rules'?'Automatic eligible drafts':'Daily approval'} · ${c.config.delivery==='smtp'?'Scheduled SMTP':'Manual sending'}</p></div>
   <div class="inline">${c.status === 'stopped' ? '' : `<button onclick="campaignAction('${c.status === 'paused' ? 'resume' : 'pause'}')">${icon('pause')}${c.status === 'paused' ? 'Resume' : 'Pause'}</button><button class="ghost" onclick="S.modal='stop';render()">Stop</button>`}<button class="primary" onclick="openCampaign('${esc(c.id)}','emails')">Review emails ${icon('arrow')}</button></div></div>
   <div class="tabs">${[['overview', 'Overview'], ['leads', 'Leads'], ['queue', 'Send queue'], ['activity', 'Activity']].map(([v, t]) => `<button class="${S.insightTab === v ? 'active' : ''}" onclick="insightTab('${v}')">${t}</button>`).join('')}</div>
-  ${S.insightTab === 'leads' ? reviewView(c) : S.insightTab === 'queue' ? tasksPanel() : S.insightTab === 'activity' ? activityPanel() : !m ? loadingPanel() : overviewPanel(c, m)}`;
+  ${S.insightTab === 'leads' ? reviewView(c) : S.insightTab === 'queue' ? tasksPanel() : S.insightTab === 'activity' ? activityPanel() : !m ? (S.metricsError ? `<div class="panel empty" role="alert"><h3>Couldn’t load campaign insights</h3><p>${esc(S.metricsError)}</p><button class="primary" onclick="insightTab('overview')">Try again</button></div>` : loadingPanel()) : overviewPanel(c, m)}`;
 }
 async function insightTab(t) { S.insightTab = t; S.lq = { decision: 'qualified', q: '', page: 0 }; render(); try { await loadViewData(); } catch (e) { fail(e); } render(); }
 function overviewPanel(c, m) {

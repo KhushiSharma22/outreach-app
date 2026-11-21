@@ -107,3 +107,16 @@ test('campaign lead screen displays admin-managed leads without customer import 
  assert.match(html(),/Your admin prepares leads for this campaign/);
  assert.doesNotMatch(html(),/Import your own contacts|Upload your contacts/);
 });
+
+test('failed campaign metrics show a retry action instead of endless loading',async()=>{
+ const c=await run(`Api.post('/api/campaigns',{name:'Retry insights',brief:{filters:{roles:['Founder']},signals:[]}})`);
+ run(`Api.originalGetForTest=Api.get; Api.get=async (...args)=>{if(args[0].endsWith('/metrics'))throw new Error('Test metrics failure'); return Api.originalGetForTest(...args);}`);
+ try {
+  await run(`openCampaign('${c.id}','tracking')`);
+  assert.match(html(),/Couldn’t load campaign insights/);
+  assert.match(html(),/Try again/);
+  run('Api.get=Api.originalGetForTest');
+  await run(`insightTab('overview')`);
+  assert.match(html(),/Today’s outreach/);
+ } finally { run('Api.get=Api.originalGetForTest'); }
+});
