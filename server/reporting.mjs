@@ -41,11 +41,11 @@ export async function workspaceSummary(ctx) {
   return {
     active_campaigns: await n(db, "SELECT count(*) n FROM campaigns WHERE workspace_id=? AND status='active'", [ws]),
     awaiting_review: await n(db, `SELECT count(*) n FROM campaign_leads l JOIN campaigns c ON c.id=l.campaign_id LEFT JOIN drafts d ON d.lead_id=l.id
-      WHERE c.workspace_id=? AND c.status<>'stopped' AND l.selected=1 AND d.current_revision_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL)
+      WHERE c.workspace_id=? AND c.status NOT IN ('stopped','deleted') AND l.selected=1 AND d.current_revision_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL)
       AND NOT EXISTS (SELECT 1 FROM send_tasks st WHERE st.lead_id=l.id AND st.status='sent')`, [ws]),
     tasks_due: await n(db, "SELECT count(*) n FROM send_tasks st JOIN campaigns c ON c.id=st.campaign_id WHERE st.workspace_id=? AND c.status='active' AND st.status IN ('pending','held') AND st.due_at<=?", [ws, new Date().toISOString()]),
-    replies_7d: await n(db, "SELECT count(DISTINCT contact_id) n FROM conversation_events WHERE workspace_id=? AND type='reply' AND occurred_at>=?", [ws, week]),
-    contacts: await n(db, 'SELECT count(*) n FROM contacts WHERE workspace_id=?', [ws]),
+    replies_7d: await n(db, "SELECT count(DISTINCT e.contact_id) n FROM conversation_events e LEFT JOIN campaigns c ON c.id=e.campaign_id WHERE e.workspace_id=? AND e.type='reply' AND e.occurred_at>=? AND (e.campaign_id IS NULL OR c.status<>'deleted')", [ws, week]),
+    contacts: await n(db, `SELECT count(*) n FROM contacts ct WHERE ct.workspace_id=? AND (EXISTS (SELECT 1 FROM campaign_leads l JOIN campaigns c ON c.id=l.campaign_id WHERE l.contact_id=ct.id AND c.status<>'deleted') OR EXISTS (SELECT 1 FROM campaign_contact_pool p JOIN campaigns c ON c.id=p.campaign_id WHERE p.contact_id=ct.id AND p.workspace_id=ct.workspace_id AND c.status<>'deleted') OR (NOT EXISTS (SELECT 1 FROM campaign_leads l WHERE l.contact_id=ct.id) AND NOT EXISTS (SELECT 1 FROM campaign_contact_pool p WHERE p.contact_id=ct.id AND p.workspace_id=ct.workspace_id)))`, [ws]),
     sending_stopped: !!(await db.get('SELECT sending_stopped FROM workspaces WHERE id=?', [ws])).sending_stopped,
     failed_jobs: await db.all("SELECT type, last_error, finished_at FROM jobs WHERE workspace_id=? AND status='dead' AND finished_at>=? ORDER BY finished_at DESC LIMIT 5", [ws, week]),
   };

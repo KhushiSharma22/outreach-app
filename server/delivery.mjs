@@ -314,9 +314,12 @@ export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false
   const current=await loadTask(ctx,t.id);
   if(blockedReason({...current,status:'pending'}) || (t.kind==='initial'&&!await validApproval(ctx,t.draft_revision_id))) throw new Error('Eligibility changed before dispatch');
   await client.sendMail({from:row.sender,to:t.to_email,subject:t.subject,text:body,headers:{'List-Unsubscribe':`<${url}>`,'List-Unsubscribe-Post':'List-Unsubscribe=One-Click'},disableFileAccess:true,disableUrlAccess:true});
- } catch {
-  await ctx.db.run("UPDATE send_tasks SET status='unknown', status_reason='SMTP outcome uncertain. Review mailbox before any retry.',updated_at=? WHERE id=?",[now(),t.id]);
-  throw conflict('send_uncertain','Sending could not be confirmed. Check the mailbox; this task will not retry automatically.');
+ } catch (error) {
+  const safeCodes=['EAUTH','ETIMEDOUT','ECONNECTION','ESOCKET','ECONNRESET','ECONNREFUSED','ENOTFOUND','EAI_AGAIN','ETLS'];
+  const smtpCode=safeCodes.includes(error?.code)?error.code:null;
+  const reason='SMTP outcome uncertain. Review mailbox before any retry.'+(smtpCode ? ` SMTP error: ${smtpCode}.` : '');
+  await ctx.db.run("UPDATE send_tasks SET status='unknown', status_reason=?,updated_at=? WHERE id=?",[reason,now(),t.id]);
+  throw conflict('send_uncertain','Sending could not be confirmed. Check the mailbox; this task will not retry automatically.',{smtp_code:smtpCode});
  } finally {client.close();}
  await ctx.db.tx(async()=>{
   await ctx.db.run("UPDATE send_tasks SET status='sent',confirmed_at=?,updated_at=? WHERE id=?",[now(),now(),t.id]);
@@ -337,7 +340,7 @@ export async function dispatchApproved(ctx,campaignId,at=Date.now(),send=smtpSen
   catch(e){
    if(['daily_send_limit','campaign_send_limit','schedule_closed'].includes(e.code))break;
    if(['blocked','approval_invalid'].includes(e.code))continue;
-   await ctx.db.audit(ctx.ws,c.id,'delivery.error','Scheduled email could not be sent',{task_id:task.id,code:e.code||'delivery_error'});
+   await ctx.db.audit(ctx.ws,c.id,'delivery.error','Scheduled email could not be sent',{task_id:task.id,code:e.code||'delivery_error',smtp_code:e.extra?.smtp_code||null});
    break;
   }
  }

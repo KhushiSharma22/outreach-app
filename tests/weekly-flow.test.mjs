@@ -9,6 +9,7 @@ import {executeDraftRun,listDrafts,approveDrafts} from '../server/drafts.mjs';
 import {launch,deleteCampaign} from '../server/delivery.mjs';
 import {listCampaigns} from '../server/campaigns.mjs';
 import {runScheduler} from '../server/jobs.mjs';
+import {workspaceSummary} from '../server/reporting.mjs';
 
 test('weekly research creates distinct day assignments, drafts, and approved-only send tasks',async()=>{
  const db=await openDb({file:':memory:'}); process.env.AI_PROVIDER='offline'; const originalNow=Date.now; Date.now=()=>Date.parse('2026-11-23T01:00:00+05:30');
@@ -48,6 +49,7 @@ test('weekly research creates distinct day assignments, drafts, and approved-onl
   await db.run("UPDATE send_tasks SET status='pending' WHERE campaign_id=?",[c.id]);
   await deleteCampaign(ctx,c.id);
   assert.equal((await listCampaigns(ctx)).length,0);
+  const summary=await workspaceSummary(ctx);assert.equal(Number(summary.awaiting_review),0);assert.equal(Number(summary.contacts),0);
   assert.equal((await db.get('SELECT status FROM send_tasks WHERE campaign_id=?',[c.id])).status,'canceled');
  }finally{Date.now=originalNow;await db.close();}
 });

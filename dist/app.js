@@ -27,7 +27,7 @@ const fmtDay = iso => iso ? new Date(iso).toLocaleDateString(undefined, { month:
 const initials = name => esc(String(name || '?').split(' ').map(x => x[0]).join('').slice(0, 2));
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const clone = v => JSON.parse(JSON.stringify(v));
-function stat(label, value, note, i) { return `<div class="stat-card"><div class="stat-top">${esc(label)}${icon(i)}</div><strong>${esc(value)}</strong><small>${esc(note)}</small></div>`; }
+function stat(label, value, note, i, id = '') { return `<div class="stat-card"><div class="stat-top">${esc(label)}${icon(i)}</div><strong ${id ? `id="${esc(id)}"` : ''}>${esc(value)}</strong><small>${esc(note)}</small></div>`; }
 function loadingPanel(text = 'Loading…') { return `<div class="panel empty"><div class="progress-track"></div><p>${esc(text)}</p></div>`; }
 function poll(fn, ms = 1000) { clearTimeout(pollTimer); pollTimer = setTimeout(async () => { try { if (await fn()) poll(fn, ms); } catch (e) { fail(e); } }, ms); }
 const AI_NAMES = { claude: 'Claude', gemini: 'Gemini' };
@@ -148,7 +148,7 @@ function homeView() {
     <div class="review-grid" style="margin:12px 0">${FILTER_GROUPS.filter(([, k]) => b.filters[k]?.length).map(([l, k]) => `<div class="review-item"><small>${esc(l)}</small><strong>${esc(b.filters[k].join(' or '))}</strong></div>`).join('')}${b.signals.length ? `<div class="review-item"><small>Signals</small><strong>${esc(b.signals.join(', '))}</strong></div>` : ''}</div>
     ${b.clarifications.length ? `<div class="notice amber">${icon('shield')}<span>${b.clarifications.map(esc).join('<br>')}</span></div>` : ''}
     <p class="helper">${b.degraded ? `${esc(AI_NAMES[S.session?.ai.provider] || 'The AI')} was busy, so keywords were used instead. Try again for an AI reading.` : AI_NAMES[b.provider] ? `Interpreted by ${AI_NAMES[b.provider]} (${esc(b.model)}).` : 'Keyword interpretation — no AI provider configured.'} Nothing is applied until you confirm it in the campaign brief.</p><button class="primary small" onclick="createFromBrief()">Review campaign brief ${icon('arrow')}</button></div>` : ''}</section>
-  <div class="stat-strip">${stat('Active campaigns', sm.active_campaigns ?? 0, 'Across your workspace', 'campaign')}${stat('Awaiting your review', sm.awaiting_review ?? 0, 'Selected leads without approved emails', 'people')}${stat('Emails due to send', sm.tasks_due ?? 0, `${sm.replies_7d ?? 0} replies recorded · last 7 days`, 'mail')}</div></div>
+  <div class="stat-strip">${stat('Active campaigns', sm.active_campaigns ?? 0, 'Across your workspace', 'campaign','home-active')}${stat('Awaiting your review', sm.awaiting_review ?? 0, 'Ready drafts without approval', 'people','home-review')}${stat('Emails due to send', sm.tasks_due ?? 0, `${sm.replies_7d ?? 0} replies recorded · last 7 days`, 'mail','home-due')}</div></div>
   <aside class="home-context"><div class="panel"><div class="panel-header"><h2 style="font-size:14px">Your company context</h2><button class="icon-btn ghost" aria-label="Edit company context" onclick="navigate('account')">${icon('settings')}</button></div><div class="context-list"><div><span>COMPANY</span><p>${esc(ctx.company)}</p></div><div><span>WHAT YOU DO</span><p>${esc(ctx.offering)}</p></div><div><span>IDEAL CUSTOMER</span><p>${esc(ctx.icp)}</p></div><div><span>YOUR VOICE</span><p>${esc(ctx.tone)}, clear, and relevant</p></div></div><div class="context-foot"><div class="inline">${icon('check')}<span style="font-size:11px">Version ${S.context.version} · used to qualify leads and write emails</span></div></div></div>
   <div class="note">${icon('shield')}<span>${sm.contacts ? `${plural(sm.contacts, 'contact')} in your workspace.` : 'Your admin can prepare leads for your campaign.'} Emails use your connected mailbox according to your campaign delivery settings.</span></div>${!sm.contacts ? `<button class="small" style="margin-top:12px" onclick="navigate('campaigns')">${icon('campaign')} View campaigns</button>` : ''}</aside></div>
   <section class="panel"><div class="panel-header"><div><h2>Your campaigns</h2><p>A clear view of what’s running and what needs you.</p></div><button class="small ghost" onclick="navigate('campaigns')">View all ${icon('arrow')}</button></div>${S.campaigns.slice(0, 3).map(campaignRow).join('') || '<p class="subtle">No campaigns yet.</p>'}</section>`;
@@ -559,8 +559,17 @@ async function deleteCampaign(){try{await Api.del(`/api/campaigns/${S.modalData.
 async function campaignAction(a) {
   try { S.c = await Api.post(`/api/campaigns/${S.cid}/${a}`); S.modal = null; await loadViewData(); await refreshSummary(); render(); toast({ pause: 'Campaign paused. Queued emails are blocked until you resume.', resume: 'Campaign resumed. Overdue follow-ups are held for your review.', stop: 'Campaign stopped.' }[a]); } catch (e) { fail(e); }
 }
+function activityDetail(e) {
+  if(e.type!=='delivery.error')return e.type;
+  const code=e.detail?.smtp_code;
+  if(['EAUTH'].includes(code))return 'SMTP authentication was rejected. Check your mailbox settings. Review Sent before retrying.';
+  if(['ETIMEDOUT','ECONNECTION','ESOCKET','ECONNRESET','ECONNREFUSED','ENOTFOUND','EAI_AGAIN','ETLS'].includes(code))return `SMTP connection issue (${code}). Review Sent before retrying.`;
+  if(e.detail?.code==='send_uncertain')return 'Outcome uncertain. Check the mailbox Sent folder before any retry.';
+  if(e.detail?.code==='mailbox_unavailable')return 'Mailbox credentials unavailable. Reconnect the mailbox.';
+  return 'Open Send queue for the affected email and check its status.';
+}
 function activityPanel() {
-  return `<section class="panel"><div class="panel-header"><h2>Campaign activity</h2>${badge('Audit log')}</div>${S.events.map(e => `<div class="activity-row">${icon('check')}<div><strong style="font-weight:500">${esc(e.summary)}</strong><p>${esc(e.type)}</p></div><time>${fmtDate(e.created_at)}</time></div>`).join('') || '<p class="subtle">No activity yet.</p>'}</section>`;
+  return `<section class="panel"><div class="panel-header"><h2>Campaign activity</h2>${badge('Audit log')}</div>${S.events.map(e => `<div class="activity-row">${icon('check')}<div><strong style="font-weight:500">${esc(e.summary)}</strong><p>${esc(activityDetail(e))}</p></div><time>${fmtDate(e.created_at)}</time></div>`).join('') || '<p class="subtle">No activity yet.</p>'}</section>`;
 }
 
 // ---------- Send queue ----------
@@ -1032,3 +1041,6 @@ async function connectSmtp(){
  }
 }
 async function disconnectSmtp(){if(!confirm('Disconnect this mailbox? Future SMTP sends will be blocked.'))return;try{await Api.del('/api/mailbox');S.mailbox={sender:null};render();toast('Mailbox disconnected. Revoke its app password with your provider if no longer needed.');}catch(e){fail(e);}}
+
+// Refresh dashboard counters without disrupting text entry or rerendering the page.
+if(typeof setInterval==='function')setInterval(async()=>{if(S.auth || S.view!=='home' || document.hidden)return;try{const next=await Api.get('/api/summary');if(S.view!=='home')return;S.summary=next;for(const [id,key] of [['home-active','active_campaigns'],['home-review','awaiting_review'],['home-due','tasks_due']])if($(id))$(id).textContent=String(next[key]??0);}catch{}},30000);
