@@ -121,6 +121,7 @@ export async function runScheduler(db, ctxFor, at = Date.now(), send, { weeklyOn
     } catch (e) {
       await db.audit(c.workspace_id, c.id, 'scheduler.error', 'Scheduled work could not be created', { error: String(e.message) });
     }
-    await dispatchApproved(ctx,c.id,at,send);
+    try { await dispatchApproved(ctx,c.id,at,send); }
+    catch (e) { await db.audit(c.workspace_id,c.id,'scheduler.delivery_error','Scheduled delivery could not run',{error:String(e.message)}); }
   }
 }
