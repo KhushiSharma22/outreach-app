@@ -68,3 +68,31 @@ test('three per day reserves fifteen and automatically schedules remaining leads
   assert.equal(Number((await db.get('SELECT count(*) n FROM weekly_slots')).n),30);
  }finally{Date.now=originalNow;await db.close();}
 });
+
+test('weekend preparation reserves next Monday without sending or drafting early',async()=>{
+ const db=await openDb({file:':memory:'}),originalNow=Date.now;process.env.AI_PROVIDER='offline';Date.now=()=>Date.parse('2026-11-21T13:00:00+05:30');
+ try{
+  const {workspace,user}=await seedWorkspace(db),ctx={db,ws:workspace.id,user,publicUrl:'https://app.example.com',jobs:{enqueue:async()=>({id:'job'})}};
+  let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
+  c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{target:3,schedule:{days:['Mon','Tue','Wed','Thu','Fri'],time:'09:00',timezone:'Asia/Kolkata'}}});
+  const csv='first_name,last_name,email,company,role,email_status,quality_score\n'+Array.from({length:6},(_,i)=>`Alex,Test,weekend${i}@example.com,Company${i},Founder,valid,95`).join('\n');
+  await seedResearch(ctx,c.id,{csv,available_on:'2026-11-21'});
+  const r=await startWeeklyDiscovery(ctx,c.id,Date.now());
+  assert.equal(r.assigned,6);assert.equal(r.first_date,'2026-11-23');assert.equal(r.week_start,'2026-11-23');
+  await executeDiscovery(ctx,r.run_id);await executeDraftRun(ctx,{campaign_id:c.id});
+  const drafts=await listDrafts(ctx,c.id);assert.equal(drafts.total,0);assert.equal(drafts.scheduled_future,6);
+ }finally{Date.now=originalNow;await db.close();}
+});
+
+test('another campaign holding this week moves planning to next week',async()=>{
+ const db=await openDb({file:':memory:'}),originalNow=Date.now;process.env.AI_PROVIDER='offline';Date.now=()=>Date.parse('2026-11-23T01:00:00+05:30');
+ try{
+  const {workspace,user}=await seedWorkspace(db),ctx={db,ws:workspace.id,user,publicUrl:'https://app.example.com',jobs:{enqueue:async()=>({id:'job'})}};
+  let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
+  c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{target:3,schedule:{days:['Mon','Tue','Wed','Thu','Fri'],time:'09:00',timezone:'Asia/Kolkata'}}});
+  const csv='first_name,last_name,email,company,role,email_status,quality_score\nAlex,Test,blocked@example.com,Company,Founder,valid,95';
+  await seedResearch(ctx,c.id,{csv,available_on:'2026-11-23'});
+  for(let n=23;n<=27;n++)await db.insert('research_days',{workspace_id:ctx.ws,day:`2026-11-${n}`,campaign_id:'another',allocated:3});
+  const r=await startWeeklyDiscovery(ctx,c.id,Date.now());assert.equal(r.first_date,'2026-11-30');
+ }finally{Date.now=originalNow;await db.close();}
+});

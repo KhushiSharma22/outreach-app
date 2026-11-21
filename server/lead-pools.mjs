@@ -141,25 +141,29 @@ export async function startWeeklyDiscovery(ctx, campaignId, at = Date.now()) {
   const all=await candidates(ctx,c,'research',date), assessments=await assessCandidates(ctx,c,all);
   const eligible=all.filter(x=>assessments.get(x.id).decision==='qualified').slice(0,150);
   if(!eligible.length)throw conflict('no_new_contacts','No new matching research contacts are available.');
-  const plan=planWeeklySlots({monday,count:eligible.length,target:c.config.target,schedule:c.config.schedule});
   const localToday=localView(at,c.config.schedule.timezone).date;
-  const days=plan.days.filter(d=>d.date>=localToday); let cursor=0;
+  let cursor=0, assignedWeek=null, firstDate=null;
   const runId=id(),batch=Number((await ctx.db.get('SELECT max(batch) b FROM discovery_runs WHERE campaign_id=?',[c.id])).b||0)+1,createdAt=now();
   await ctx.db.insert('discovery_runs',{id:runId,campaign_id:c.id,batch,config_version:c.config_version,trigger:'weekly',occurrence_date:null,status:'queued',progress:'{}',created_at:createdAt});
-  for(const day of days){
-   const existing=await ctx.db.get('SELECT * FROM research_days WHERE workspace_id=? AND day=?',[ctx.ws,day.date]);
-   if(existing&&existing.campaign_id!==c.id)continue;
-   const room=Math.max(0,Math.min(c.config.target,30)-Number(existing?.allocated||0));
-   let n=0; while(n<room&&cursor<eligible.length){const lead=eligible[cursor++];
-    await ctx.db.insert('campaign_contact_claims',{workspace_id:ctx.ws,campaign_id:c.id,contact_id:lead.id,run_id:runId,source:'research'});
-    await ctx.db.insert('weekly_slots',{workspace_id:ctx.ws,campaign_id:c.id,contact_id:lead.id,run_id:runId,slot_date:day.date});n++;
+  // Use this week if it has room, otherwise reserve the next week. Never allocate both weeks in one request.
+  for(const week of [monday,addDays(monday,7)]){
+   const plan=planWeeklySlots({monday:week,count:eligible.length,target:c.config.target,schedule:c.config.schedule});
+   for(const day of plan.days.filter(d=>d.date>=localToday)){
+    const existing=await ctx.db.get('SELECT * FROM research_days WHERE workspace_id=? AND day=?',[ctx.ws,day.date]);
+    if(existing&&existing.campaign_id!==c.id)continue;
+    const room=Math.max(0,Math.min(c.config.target,30)-Number(existing?.allocated||0));
+    let n=0; while(n<room&&cursor<eligible.length){const lead=eligible[cursor++];
+     await ctx.db.insert('campaign_contact_claims',{workspace_id:ctx.ws,campaign_id:c.id,contact_id:lead.id,run_id:runId,source:'research'});
+     await ctx.db.insert('weekly_slots',{workspace_id:ctx.ws,campaign_id:c.id,contact_id:lead.id,run_id:runId,slot_date:day.date});n++;
+    }
+    if(n){firstDate ||= day.date;assignedWeek=week;await ctx.db.run(`INSERT INTO research_days(workspace_id,day,campaign_id,allocated) VALUES(?,?,?,?) ON CONFLICT(workspace_id,day) DO UPDATE SET allocated=research_days.allocated+excluded.allocated`,[ctx.ws,day.date,c.id,n]);}
    }
-   if(n)await ctx.db.run(`INSERT INTO research_days(workspace_id,day,campaign_id,allocated) VALUES(?,?,?,?) ON CONFLICT(workspace_id,day) DO UPDATE SET allocated=research_days.allocated+excluded.allocated`,[ctx.ws,day.date,c.id,n]);
+   if(cursor)break;
   }
-  if(!cursor)throw conflict('weekly_full','No capacity remains on this week’s selected days.');
+  if(!cursor)throw conflict('weekly_full','No available slots remain this week or next week. Review your schedule or another campaign’s reservations.');
   await ctx.jobs.enqueue(ctx.ws,'discovery',{run_id:runId},{dedupe:'discovery:'+runId});
   await ctx.db.audit(ctx.ws,c.id,'weekly.queued','Weekly research reserved',{run_id:runId,count:cursor,unassigned:eligible.length-cursor},ctx.user?.id);
-  result={run_id:runId,assigned:cursor,unassigned:eligible.length-cursor};
+  result={run_id:runId,assigned:cursor,unassigned:eligible.length-cursor,week_start:assignedWeek,first_date:firstDate};
  });
  return {...result,run:await ctx.db.get('SELECT * FROM discovery_runs WHERE id=?',[result.run_id])};
 }
