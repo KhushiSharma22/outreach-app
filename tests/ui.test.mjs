@@ -75,7 +75,7 @@ test('every screen renders from the API, and the full manual-send journey works 
   await run('continueFlow()');                 // → schedule
   assert.match(html(), /Manual send tasks/);
   await run('continueFlow()');                 // → launch summary
-  assert.match(html(), /Every email approved at its exact wording/);
+  assert.match(html(), /Only emails with approval for their exact wording can be sent/);
   await run('continueFlow()');                 // launch (checkbox stub is checked)
   await until(() => run('S.view') === 'tracking' && run('S.metrics'));
   assert.match(html(), /CAMPAIGN INSIGHTS/);

@@ -21,3 +21,8 @@ form.inline button{white-space:nowrap}
 /* Campaign CSV upload: one accessible chooser with a persistent filename. */
 .campaign-upload-box{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:20px;margin-top:16px;border:1px dashed #b5c9bd;border-radius:10px;background:var(--bg)}
 .campaign-upload-box>div{flex:1;min-width:200px}.campaign-upload-box>div>.icon{margin-right:10px;vertical-align:middle}.campaign-upload-box .helper{margin:6px 0 0}.campaign-upload-box .campaign-upload-filename{flex-basis:100%;overflow-wrap:anywhere}.campaign-upload-box input[hidden]{display:none}
+
+/* Keyboard access and comfortable navigation on compact screens. */
+input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:0.01ms!important;animation-duration:0.01ms!important;animation-iteration-count:1!important}}
+@media (min-width:901px){.sidebar{overflow-y:auto;overscroll-behavior:contain}}

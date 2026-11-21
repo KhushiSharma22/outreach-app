@@ -3,6 +3,8 @@ import {id,now} from './db.mjs';
 import {invalid,conflict,parseCsv,EMAIL_RE,localView} from './lib.mjs';
 import {loadCampaign} from './campaigns.mjs';
 import {importCsv,checkCandidate} from './sourcing.mjs';
+import {planWeeklySlots} from './weekly-plan.mjs';
+import {addDays,weekdayOf} from './lib.mjs';
 const quote=v=>'"'+String(v??'').replaceAll('"','""')+'"';
 export function previewUpload({csv}) {
  if(typeof csv!=='string'||csv.length>5_000_000)throw invalid('Choose a CSV file up to 5 MB.');
@@ -124,4 +126,40 @@ export async function startCampaignDiscovery(ctx,c,{trigger='manual',occurrenceD
  await ctx.jobs.enqueue(ctx.ws,'discovery',{run_id:run.id},{dedupe:'discovery:'+run.id});
  await ctx.db.audit(ctx.ws,c.id,'discovery.queued',research?'Research leads requested':'Imported contacts queued for review',{run_id:run.id,count:selected.length},ctx.user?.id);runId=run.id;
  });const run=await ctx.db.get('SELECT * FROM discovery_runs WHERE id=?',[runId]);return {...run,progress:JSON.parse(run.progress)};
+}
+
+// Reserve one weekly research batch atomically; preparation is still subject to every fit check.
+export async function startWeeklyDiscovery(ctx, campaignId, at = Date.now()) {
+ const c=await loadCampaign(ctx,campaignId);
+ if(c.status==='stopped'||c.config.source!=='research') throw conflict('weekly_unavailable','Weekly planning requires an active or draft Research Leads campaign.');
+ if(!c.config.filters.roles.length&&!c.config.filters.industries.length) throw invalid('Choose at least one role or industry.');
+ const date=localView(at,'Asia/Kolkata').date, offset=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].indexOf(weekdayOf(date)), monday=addDays(date,-offset);
+ let result;
+ await ctx.db.tx(async()=>{
+  await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
+  if(await ctx.db.get("SELECT id FROM discovery_runs WHERE campaign_id=? AND status IN ('queued','running')",[c.id]))throw conflict('discovery_running','Wait for the current discovery run to finish.');
+  const all=await candidates(ctx,c,'research',date), assessments=await assessCandidates(ctx,c,all);
+  const eligible=all.filter(x=>assessments.get(x.id).decision==='qualified').slice(0,150);
+  if(!eligible.length)throw conflict('no_new_contacts','No new matching research contacts are available.');
+  const plan=planWeeklySlots({monday,count:eligible.length,target:c.config.target,schedule:c.config.schedule});
+  const localToday=localView(at,c.config.schedule.timezone).date;
+  const days=plan.days.filter(d=>d.date>=localToday); let cursor=0;
+  const runId=id(),batch=Number((await ctx.db.get('SELECT max(batch) b FROM discovery_runs WHERE campaign_id=?',[c.id])).b||0)+1,createdAt=now();
+  await ctx.db.insert('discovery_runs',{id:runId,campaign_id:c.id,batch,config_version:c.config_version,trigger:'weekly',occurrence_date:null,status:'queued',progress:'{}',created_at:createdAt});
+  for(const day of days){
+   const existing=await ctx.db.get('SELECT * FROM research_days WHERE workspace_id=? AND day=?',[ctx.ws,day.date]);
+   if(existing&&existing.campaign_id!==c.id)continue;
+   const room=Math.max(0,Math.min(c.config.target,30)-Number(existing?.allocated||0));
+   let n=0; while(n<room&&cursor<eligible.length){const lead=eligible[cursor++];
+    await ctx.db.insert('campaign_contact_claims',{workspace_id:ctx.ws,campaign_id:c.id,contact_id:lead.id,run_id:runId,source:'research'});
+    await ctx.db.insert('weekly_slots',{workspace_id:ctx.ws,campaign_id:c.id,contact_id:lead.id,run_id:runId,slot_date:day.date});n++;
+   }
+   if(n)await ctx.db.run(`INSERT INTO research_days(workspace_id,day,campaign_id,allocated) VALUES(?,?,?,?) ON CONFLICT(workspace_id,day) DO UPDATE SET allocated=research_days.allocated+excluded.allocated`,[ctx.ws,day.date,c.id,n]);
+  }
+  if(!cursor)throw conflict('weekly_full','No capacity remains on this week’s selected days.');
+  await ctx.jobs.enqueue(ctx.ws,'discovery',{run_id:runId},{dedupe:'discovery:'+runId});
+  await ctx.db.audit(ctx.ws,c.id,'weekly.queued','Weekly research reserved',{run_id:runId,count:cursor,unassigned:eligible.length-cursor},ctx.user?.id);
+  result={run_id:runId,assigned:cursor,unassigned:eligible.length-cursor};
+ });
+ return {...result,run:await ctx.db.get('SELECT * FROM discovery_runs WHERE id=?',[result.run_id])};
 }

@@ -113,7 +113,7 @@ export async function runScheduler(db, ctxFor, at = Date.now(), send) {
     const ctx = ctxFor(c.workspace_id), s = json(c.data).schedule;
     try {
       const local = localView(at, s.timezone);
-      if (s.days.includes(local.weekday) && local.time >= scheduleTime(s,local.weekday) && !await db.get('SELECT 1 FROM discovery_runs WHERE campaign_id=? AND occurrence_date=?', [c.id, local.date])) {
+      if (s.days.includes(local.weekday) && local.time >= scheduleTime(s,local.weekday) && !await db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date=?',[c.workspace_id,c.id,local.date]) && !await db.get('SELECT 1 FROM discovery_runs WHERE campaign_id=? AND occurrence_date=?', [c.id, local.date])) {
         await startDiscovery(ctx, c.id, { trigger: 'schedule', occurrenceDate: local.date });
       }
       await planFollowups(ctx, c.id);

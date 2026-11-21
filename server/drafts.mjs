@@ -6,19 +6,19 @@ import { loadCampaign } from './campaigns.mjs';
 
 // ---------- Leads ----------
 const LEAD_SELECT = `SELECT l.*, ct.first_name, ct.last_name, ct.role, ct.seniority, ct.email, ct.email_status, ct.linkedin_url, ct.location, ct.company_id,
-  co.name company, co.domain, co.industry, co.employees, co.location company_location, r.batch, s.reason suppressed,
+  co.name company, co.domain, co.industry, co.employees, co.location company_location, r.batch, s.reason suppressed, wslot.slot_date,
   d.id draft_id, d.current_revision_id,
   (SELECT 1 FROM approvals a JOIN draft_revisions dr ON dr.id=a.revision_id WHERE a.draft_id=d.id AND a.revision_id=d.current_revision_id AND a.invalidated_at IS NULL AND a.hash=dr.hash) approved,
   (SELECT st.status FROM send_tasks st WHERE st.lead_id=l.id AND st.kind='initial' ORDER BY st.created_at DESC LIMIT 1) send_status
   FROM campaign_leads l JOIN contacts ct ON ct.id=l.contact_id JOIN companies co ON co.id=ct.company_id JOIN discovery_runs r ON r.id=l.run_id
-  JOIN campaigns c ON c.id=l.campaign_id LEFT JOIN suppressions s ON s.workspace_id=c.workspace_id AND s.email=ct.email LEFT JOIN drafts d ON d.lead_id=l.id`;
+  JOIN campaigns c ON c.id=l.campaign_id LEFT JOIN suppressions s ON s.workspace_id=c.workspace_id AND s.email=ct.email LEFT JOIN drafts d ON d.lead_id=l.id LEFT JOIN weekly_slots wslot ON wslot.campaign_id=l.campaign_id AND wslot.contact_id=l.contact_id`;
 export async function shapeLead(ctx, l, withEvidence = true) {
   return {
     id: l.id, campaign_id: l.campaign_id, contact_id: l.contact_id, run_id: l.run_id, batch: l.batch,
     name: `${l.first_name} ${l.last_name}`.trim(), first_name: l.first_name, role: l.role, seniority: l.seniority, email: l.email, email_status: l.email_status, linkedin_url: l.linkedin_url,
     company: l.company, domain: l.domain, industry: l.industry, employees: l.employees, location: l.location || l.company_location,
     decision: l.decision, score: l.score, rationale: l.rationale, checks: json(l.checks), missing: json(l.missing), confidence: l.confidence, assessed_by: l.assessed_by,
-    selected: !!l.selected, override_by: l.override_by, override_reason: l.override_reason, suppressed: l.suppressed,
+    slot_date: l.slot_date || null, selected: !!l.selected, override_by: l.override_by, override_reason: l.override_reason, suppressed: l.suppressed,
     draft_id: l.draft_id, approved: !!l.approved, send_status: l.send_status,
     evidence: withEvidence ? await ctx.db.all('SELECT id, signal, fact, source_url, event_date, collected_at, provenance FROM evidence WHERE workspace_id=? AND (contact_id=? OR (company_id=? AND contact_id IS NULL)) ORDER BY collected_at DESC LIMIT 20', [ctx.ws,l.contact_id,l.company_id]) : [],
   };

@@ -4,7 +4,7 @@
 import { randomBytes } from 'node:crypto';
 import { transport } from './mailbox.mjs';
 import { id, now } from './db.mjs';
-import { conflict, invalid, notFound, EMAIL_RE, normEmail, localView, zonedToUtc } from './lib.mjs';
+import { conflict, invalid, notFound, EMAIL_RE, normEmail, localView, zonedToUtc, weekdayOf } from './lib.mjs';
 import { loadCampaign, scheduleErrors, scheduleTime } from './campaigns.mjs';
 import { validApproval, cancelLeadTasks } from './drafts.mjs';
 import { enrollOnSend, stopEnrollments, advanceEnrollment, holdOverdue, planFollowups } from './sequences.mjs';
@@ -38,7 +38,8 @@ export async function blockers(ctx, c) {
     WHERE l.campaign_id=? AND l.selected=1 AND l.decision='qualified'`, [c.id]);
   if (!sel.length) out.push({ code: 'leads', message: 'Select at least one qualified prospect.' });
   const unapproved = sel.filter(l => !l.current_revision_id || !l.approved).length;
-  if (unapproved) out.push({ code: 'approvals', message: `Approve every email (${unapproved} still need approval).` });
+  const weekly = await ctx.db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? LIMIT 1',[ctx.ws,c.id]);
+  if (unapproved && (!weekly || unapproved === sel.length)) out.push({ code: 'approvals', message: weekly ? 'Approve at least one email before launch.' : `Approve every email (${unapproved} still need approval).` });
   const bad = sel.filter(l => !l.email || !EMAIL_RE.test(l.email) || l.suppressed).length;
   if (bad) out.push({ code: 'recipients', message: `${bad} selected recipient${bad > 1 ? 's are' : ' is'} missing a usable email or suppressed.` });
   const complianceHolds = sel.filter(l => ftpAuthorizationReason({...l,context_data:JSON.stringify(c.context.data),campaign_config:JSON.stringify(c.config)})).length;
@@ -67,7 +68,7 @@ export function scheduledDue(config,at=Date.now()){
 
 async function createInitialTask(ctx, c, leadId, revisionId) {
   const r = await ctx.db.get('SELECT r.*, ct.email, ct.id contact_id FROM draft_revisions r JOIN drafts d ON d.id=r.draft_id JOIN campaign_leads l ON l.id=d.lead_id JOIN contacts ct ON ct.id=l.contact_id WHERE r.id=? AND l.id=?', [revisionId, leadId]);
-  if (!r || await ctx.db.get("SELECT 1 FROM send_tasks WHERE lead_id=? AND kind='initial' AND status IN ('sent')", [leadId])) return null;
+  if (!r || !await validApproval(ctx, revisionId) || await ctx.db.get("SELECT 1 FROM send_tasks WHERE lead_id=? AND kind='initial' AND status IN ('sent')", [leadId])) return null;
   const key = `init:${leadId}:${revisionId}`;
   const existing = await ctx.db.get('SELECT * FROM send_tasks WHERE workspace_id=? AND dedupe_key=?', [ctx.ws, key]);
   if (existing) {
@@ -75,7 +76,9 @@ async function createInitialTask(ctx, c, leadId, revisionId) {
     return existing.id;
   }
   const t = now();
-  await ctx.db.insert('send_tasks', { id: id(), workspace_id: ctx.ws, campaign_id: c.id, lead_id: leadId, contact_id: r.contact_id, kind: 'initial', draft_revision_id: r.id, enrollment_id: null, step_index: null, to_email: r.email, subject: r.subject, body: r.body, due_at: c.config.delivery==='smtp'?scheduledDue(c.config):t, status: 'pending', status_reason: null, dedupe_key: key, confirmed_at: null, confirmed_by: null, created_at: t, updated_at: t });
+  const slot = await ctx.db.get('SELECT slot_date FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND contact_id=?',[ctx.ws,c.id,r.contact_id]);
+  const slotDue = slot ? zonedToUtc(slot.slot_date,scheduleTime(c.config.schedule,weekdayOf(slot.slot_date)),c.config.schedule.timezone) : null;
+  await ctx.db.insert('send_tasks', { id: id(), workspace_id: ctx.ws, campaign_id: c.id, lead_id: leadId, contact_id: r.contact_id, kind: 'initial', draft_revision_id: r.id, enrollment_id: null, step_index: null, to_email: r.email, subject: r.subject, body: r.body, due_at: c.config.delivery==='smtp'?(slotDue ? new Date(Math.max(Date.parse(t),Date.parse(slotDue))).toISOString() : scheduledDue(c.config)):t, status: 'pending', status_reason: null, dedupe_key: key, confirmed_at: null, confirmed_by: null, created_at: t, updated_at: t });
   return true;
 }
 // Called inside the approval transaction: approved content for a running campaign becomes a send task.
@@ -136,14 +139,15 @@ function blockedReason(t) {
   if (t.email_status === 'invalid') return 'Recipient email is invalid.';
   if (t.suppressed) return `Recipient is suppressed (${t.suppressed}).`;
   const authorization = ftpAuthorizationReason(t); if (authorization) return authorization;
+  if (t.slot_date && localView(Date.now(), JSON.parse(t.campaign_config).schedule.timezone).date !== t.slot_date && localView(Date.now(), JSON.parse(t.campaign_config).schedule.timezone).date > t.slot_date) return 'Scheduled day passed; review this email before sending.';
   if (t.kind === 'followup' && t.sequence_status !== 'active') return t.sequence_status === 'draft' ? 'Sequence is being edited.' : 'Sequence is paused.';
   if (t.kind === 'followup' && t.enrollment_status !== 'active') return 'Follow-ups stopped for this recipient.';
   return null;
 }
-const TASK_SELECT = `SELECT st.*, c.name campaign_name, c.status campaign_status, cv.data campaign_config, ac.data context_data, w.sending_stopped, ct.first_name, ct.last_name, ct.email_status, ct.location contact_location, co.name company, co.location company_location, ca.email casl_email, ca.basis casl_basis, ca.evidence casl_evidence, ca.source_url casl_source_url, ca.expires_on casl_expires_on, ca.invalidated_at casl_invalidated_at,
+const TASK_SELECT = `SELECT st.*, c.name campaign_name, c.status campaign_status, cv.data campaign_config, ac.data context_data, w.sending_stopped, ct.first_name, ct.last_name, ct.email_status, ct.location contact_location, co.name company, co.location company_location, ca.email casl_email, ca.basis casl_basis, ca.evidence casl_evidence, ca.source_url casl_source_url, ca.expires_on casl_expires_on, ca.invalidated_at casl_invalidated_at, wslt.slot_date,
   s.reason suppressed, e.status enrollment_status, sq.status sequence_status, v.steps sequence_steps, m.sent_at, m.proof
   FROM send_tasks st JOIN campaigns c ON c.id=st.campaign_id JOIN campaign_config_versions cv ON cv.campaign_id=c.id AND cv.version=c.config_version JOIN account_context_versions ac ON ac.id=c.context_version_id JOIN workspaces w ON w.id=st.workspace_id JOIN contacts ct ON ct.id=st.contact_id JOIN companies co ON co.id=ct.company_id
-  LEFT JOIN casl_authorizations ca ON ca.workspace_id=st.workspace_id AND ca.contact_id=ct.id LEFT JOIN suppressions s ON s.workspace_id=st.workspace_id AND s.email=st.to_email LEFT JOIN enrollments e ON e.id=st.enrollment_id
+  LEFT JOIN weekly_slots wslt ON wslt.workspace_id=st.workspace_id AND wslt.campaign_id=st.campaign_id AND wslt.contact_id=st.contact_id LEFT JOIN casl_authorizations ca ON ca.workspace_id=st.workspace_id AND ca.contact_id=ct.id LEFT JOIN suppressions s ON s.workspace_id=st.workspace_id AND s.email=st.to_email LEFT JOIN enrollments e ON e.id=st.enrollment_id
   LEFT JOIN sequences sq ON sq.id=e.sequence_id LEFT JOIN sequence_versions v ON v.id=e.sequence_version_id LEFT JOIN messages m ON m.send_task_id=st.id`;
 function shapeTask(t) {
   const blocked = blockedReason(t);
@@ -311,7 +315,7 @@ export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false
 export async function dispatchApproved(ctx,campaignId,at=Date.now(),send=smtpSend){
  const c=await loadCampaign(ctx,campaignId),s=c.config.schedule,local=localView(at,s.timezone);
  if(c.status!=='active'||c.config.delivery!=='smtp'||!s.days.includes(local.weekday)||local.time<scheduleTime(s,local.weekday))return;
- const tasks=await ctx.db.all("SELECT id FROM send_tasks WHERE workspace_id=? AND campaign_id=? AND kind='initial' AND status='pending' AND due_at<=? ORDER BY due_at,id LIMIT 30",[ctx.ws,c.id,new Date(at).toISOString()]);
+ const tasks=await ctx.db.all("SELECT st.id FROM send_tasks st LEFT JOIN weekly_slots ws ON ws.workspace_id=st.workspace_id AND ws.campaign_id=st.campaign_id AND ws.contact_id=st.contact_id WHERE st.workspace_id=? AND st.campaign_id=? AND st.kind='initial' AND st.status='pending' AND st.due_at<=? AND (ws.slot_date IS NULL OR ws.slot_date=?) ORDER BY st.due_at,st.id LIMIT 30",[ctx.ws,c.id,new Date(at).toISOString(),local.date]);
  for(const task of tasks){
   try{await send(ctx,task.id,ctx.publicUrl,{automatic:true});}
   catch(e){

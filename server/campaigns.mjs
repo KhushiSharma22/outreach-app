@@ -1,6 +1,6 @@
 // Workspace company context (versioned) and campaign configuration (versioned).
 import { id, now } from './db.mjs';
-import { AppError, notFound, conflict, invalid, json, EMAIL_RE, validTimezone, WEEKDAYS } from './lib.mjs';
+import { AppError, notFound, conflict, invalid, json, EMAIL_RE, validTimezone, WEEKDAYS, localView } from './lib.mjs';
 import { CATALOG } from './ai.mjs';
 
 export const DEFAULT_CONTEXT = {
@@ -174,6 +174,7 @@ export async function updateCampaign(ctx, campaignId, body) {
       if (c.status !== 'draft' && c.config.approval === 'rules' && Object.keys(body.config).some(k => k !== 'approval') ) throw invalid('Switch to daily review before changing an automatically approved campaign.');
       if (c.status !== 'draft' && body.config.approval === 'rules' && c.config.approval !== 'rules') throw invalid('Automatic approval must be authorised when launching a new campaign.');
       const next = normalizeConfig(c.config, body.config);
+      if ((JSON.stringify(next.schedule) !== JSON.stringify(c.config.schedule) || next.target !== c.config.target) && await ctx.db.get('SELECT 1 FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date>=? LIMIT 1',[ctx.ws,c.id,localView(Date.now(),c.config.schedule.timezone).date])) throw conflict('weekly_schedule_locked', 'The schedule and daily target are locked while this week has reserved leads. Set them before preparing the batch.');
       if (c.status !== 'draft') { const e = scheduleErrors(next.schedule); if (e.length) throw invalid(e.join(' '), { schedule: e }); }
       if (JSON.stringify(next) !== JSON.stringify(c.config)) {
         const v = c.config_version + 1;

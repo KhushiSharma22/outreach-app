@@ -280,7 +280,7 @@ export async function executeDiscovery(ctx, runId) {
     if (i % 5 === 4) await progress({ stage: 'checking', checked: i + 1, total: candidates.length });
   }
   const qualified = assessed.filter(a => a.result.decision === 'qualified').sort((a, b) => b.result.score - a.result.score);
-  const selected = new Set(qualified.slice(0, config.target).map(a => a.cand.id));
+  const selected = new Set(qualified.slice(0, run.trigger === 'weekly' ? config.target * 5 : config.target).map(a => a.cand.id));
   const t = now();
   const shortfall = qualified.length < config.min ? shortfallReason(assessed, qualified.length, config, candidates.length) : null;
   await ctx.db.tx(async () => {

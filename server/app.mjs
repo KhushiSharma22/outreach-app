@@ -148,6 +148,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
     if(preview.errors.length||!preview.valid)throw invalid('Fix invalid rows before uploading research.');
     return leadPools.seedResearch({...ctx,ws:c.workspace_id},p.id,body);
   },{status:201,idem:true});
+  route('POST', '/api/campaigns/:id/weekly-discovery', async (ctx,p)=>await leadPools.startWeeklyDiscovery(ctx,p.id), {status:202,idem:true});
   route('GET', '/api/campaigns/:id/sources', async (ctx,p)=>leadPools.sourceStatus(ctx,p.id));
   route('POST', '/api/campaigns/:id/import-preview', async (ctx,p,body)=>{await campaigns.loadCampaign(ctx,p.id);if(!await admin.isOperator(db,ctx.user.email))throw new AppError(403,'operator_only','Lead imports are managed by the admin.');const {accepted,...preview}=leadPools.previewUpload(body);return preview;});
   route('POST', '/api/campaigns/:id/imports', async (ctx,p,body)=>{if(!await admin.isOperator(db,ctx.user.email))throw new AppError(403,'operator_only','Lead imports are managed by the admin.');return leadPools.uploadForCampaign(ctx,p.id,body);}, {status:201,idem:true});
