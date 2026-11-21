@@ -407,6 +407,26 @@ async function moveLeadsToday(){try{const r=await Api.post(`/api/campaigns/${S.c
 function activeItem() { const items = S.drafts?.items || []; return items.find(x => x.lead.id === S.messageLead) || items[0]; }
 function emailPreview(text){const inline=s=>esc(s).replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>');let out='',list=false;for(const line of String(text||'').split('\n')){const bullet=line.match(/^\s*[-•] +(.+)/);if(bullet){if(!list){out+='<ul>';list=true;}out+='<li>'+inline(bullet[1])+'</li>';}else{if(list){out+='</ul>';list=false;}out+=line.trim()?inline(line)+'<br>':'<br>';}}return out+(list?'</ul>':'');}
 function updateEmailPreview(){const el=$('email-preview');if(el)el.innerHTML=emailPreview($('email-body')?.value);}
+async function formatEmailSelection(style){
+  const field=$('email-body');if(!field||field.disabled||S.busy)return;
+  let start=field.selectionStart,end=field.selectionEnd,text=field.value;
+  if(style==='bold'){
+    if(start===end)return toast('Select text in the email first.');
+    const selection=text.slice(start,end);
+    if(selection.includes('\n'))return toast('Select text within one line to make it bold.');
+    if(selection.startsWith('**')&&selection.endsWith('**')&&selection.length>4){field.setRangeText(selection.slice(2,-2),start,end,'select');}
+    else if(start>=2&&text.slice(start-2,start)==='**'&&text.slice(end,end+2)==='**'){field.setRangeText(selection,start-2,end+2,'select');}
+    else field.setRangeText('**'+selection+'**',start,end,'select');
+  }else if(style==='bullets'){
+    start=text.lastIndexOf('\n',start-1)+1;
+    const stop=text.indexOf('\n',end);end=stop<0?text.length:stop;
+    const lines=text.slice(start,end).split('\n');
+    const remove=lines.filter(x=>x.trim()).every(x=>/^\s*[-•] +/.test(x));
+    field.setRangeText(lines.map(x=>!x.trim()?x:remove?x.replace(/^(\s*)[-•] +/,'$1'):'- '+x).join('\n'),start,end,'select');
+  }else return;
+  field.focus();updateEmailPreview();
+  if(!await saveDraftEdit()){const currentField=$('email-body');if(currentField)currentField.value=activeItem()?.draft?.body||'';updateEmailPreview();}
+}
 function studioView(c) {
   const D = S.drafts;
   if (!D) return loadingPanel('Loading drafts…');
@@ -427,7 +447,8 @@ function studioView(c) {
   <section class="editor-main">${!d ? `<div class="empty">${busy ? '<div class="progress-track"></div>' : ''}<p>${busy ? 'Drafting this email…' : 'No draft yet.'}</p></div>` : `
     <div class="email-meta"><span>To</span>${esc(l.name)} &lt;${esc(l.email)}&gt; ${emailBadge(l.email_status)}</div><div class="email-meta"><span>From</span>${esc(ctx.sender)} &lt;${esc(ctx.email)}&gt; <small class="subtle">· ${c.config.delivery === 'smtp' ? 'sent through your connected mailbox after approval and launch' : 'you send this from your mailbox'}</small></div>
     <div class="email-meta"><label for="email-subject" style="margin:0;color:var(--muted);min-width:38px">Subject</label><input id="email-subject" value="${esc(d.subject)}" onchange="saveDraftEdit()" ${locked ? 'disabled' : ''}></div>
-    <textarea class="email-body" id="email-body" aria-label="Personalized email body" oninput="updateEmailPreview()" onchange="saveDraftEdit()" ${locked ? 'disabled' : ''}>${esc(d.body)}</textarea><p class="helper">Optional formatting: use **bold text** and start a line with “- ” for a bullet.</p><details class="email-preview"><summary>Preview formatted email</summary><div id="email-preview">${emailPreview(d.body)}</div></details>
+    <div class="format-toolbar" role="toolbar" aria-label="Email formatting"><span>Formatting</span><button type="button" class="small" aria-label="Bold selected text" title="Bold selected text" onmousedown="event.preventDefault()" onclick="formatEmailSelection('bold')" ${locked||S.busy?'disabled':''}><strong>B</strong></button><button type="button" class="small" aria-label="Toggle bullet list" title="Toggle bullets for selected lines" onmousedown="event.preventDefault()" onclick="formatEmailSelection('bullets')" ${locked||S.busy?'disabled':''}>• List</button><small>Select text to format it</small></div>
+    <textarea class="email-body" id="email-body" aria-label="Personalized email body" oninput="updateEmailPreview()" onchange="saveDraftEdit()" ${locked ? 'disabled' : ''}>${esc(d.body)}</textarea><details class="email-preview" open><summary>Formatted preview</summary><div id="email-preview">${emailPreview(d.body)}</div></details>
     ${d.review_note ? `<div class="notice amber">${icon('shield')}${esc(d.review_note)}</div>` : ''}${d.stale ? `<div class="notice">${icon('spark')}Written with earlier campaign settings. <button class="small ghost" onclick="regenerate(true)">Regenerate outdated drafts</button></div>` : ''}
     <div class="evidence-box"><strong>${icon('spark')} Why this email is relevant</strong>${evidence.length ? evidence.map(e => `${esc(e.fact)} <small class="subtle">${e.event_date ? '· ' + esc(e.event_date) : ''} ${e.source_url ? `· <a href="${esc(e.source_url)}" target="_blank" rel="noopener noreferrer">source</a>` : ''}</small>`).join('<br>') : 'No signal evidence cited in this draft.'}<br>Matches: ${esc(l.role)} · ${l.score}/100 fit · ${esc(l.rationale)}</div>
     <div class="rewrite-bar"><span class="helper" style="margin:0 3px 0 0">Refine</span><button onclick="rewrite('human')" ${locked || S.busy ? 'disabled' : ''}>${icon('spark')} More natural</button><button onclick="rewrite('short')" ${locked || S.busy ? 'disabled' : ''}>Shorter</button><button onclick="rewrite('direct')" ${locked || S.busy ? 'disabled' : ''}>More direct</button></div>
@@ -636,7 +657,8 @@ function tasksPanel() {
 function taskCard(t) {
   const label = t.kind === 'initial' ? 'Initial email' : `Follow-up ${t.step_index + 1} · day ${t.day}`;
   const state = t.status === 'held' ? badge('Held for review', 'amber') : t.blocked_reason ? badge('Blocked', 'amber') : t.status === 'pending' ? (t.due ? badge('Due now', 'green') : badge('Due ' + fmtDate(t.due_at))) : badge(t.status === 'sent' ? (t.proof === 'smtp_accepted' ? 'SMTP accepted' : 'Sent · confirmed by you') : t.status, t.status === 'sent' ? 'green' : '');
-  const mail = `mailto:${encodeURIComponent(t.to_email)}?subject=${encodeURIComponent(t.subject)}&body=${encodeURIComponent(t.body)}`;
+  const plainBody=String(t.body||'').replace(/\*\*([^*\n]+)\*\*/g,'$1');
+  const mail = `mailto:${encodeURIComponent(t.to_email)}?subject=${encodeURIComponent(t.subject)}&body=${encodeURIComponent(plainBody)}`;
   return `<article class="task-card"><div class="task-head"><span class="avatar">${initials(t.recipient)}</span><div class="grow"><strong>${esc(t.recipient)}</strong> <small class="subtle">${esc(t.company)} · ${esc(t.to_email)}</small><p class="subtle" style="margin:2px 0 0">${esc(label)} · ${esc(t.campaign_name)}</p></div>${state}</div>
   <div class="task-body"><strong>${esc(t.subject)}</strong><pre>${esc(t.body)}</pre></div>
   ${t.blocked_reason ? `<p class="helper">${icon('shield')} ${esc(t.blocked_reason)}</p>` : t.status_reason && t.status !== 'pending' ? `<p class="helper">${esc(t.status_reason)}</p>` : ''}

@@ -18,7 +18,7 @@ before(async () => {
   await new Promise(r => app.server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${app.server.address().port}`;
   els = {};
-  const el = id => (els[id] ??= { id, innerHTML: '', textContent: '', value: '', checked: true, style: {}, className: '', files: [], focus() {}, setSelectionRange() {} });
+  const el = id => (els[id] ??= { id, innerHTML: '', textContent: '', value: '', checked: true, style: {}, className: '', files: [], selectionStart:0, selectionEnd:0, focus() {}, setSelectionRange() {}, setRangeText(text,start,end){this.value=this.value.slice(0,start)+text+this.value.slice(end);this.selectionStart=start;this.selectionEnd=start+text.length;} });
   const doFetch = (url, opts) => fetch(url.startsWith('/') ? base + url : url, opts);
   ctx = vm.createContext({ OUTBOUND_BASE: base, OUTBOUND_TOKEN: app.devToken, crypto: globalThis.crypto, scrollTo() {}, addEventListener() {}, fetch: doFetch,
     document: { getElementById: el, querySelector: () => el('q'), querySelectorAll: () => [], addEventListener() {} }, navigator: {}, console, setTimeout, clearTimeout, Date, URLSearchParams, encodeURIComponent, location: {} });
@@ -70,7 +70,18 @@ test('every screen renders from the API, and the full manual-send journey works 
   assert.match(html(), /Emails that sound like you/);
   assert.match(html(), /Edit with AI/);
   assert.match(html(), /Attachments/);
+  assert.match(html(), /Bold selected text/);
   run("$('email-subject').value=activeItem().draft.subject; $('email-body').value=activeItem().draft.body");
+  run("$('email-body').selectionStart=0; $('email-body').selectionEnd=2");
+  await run("formatEmailSelection('bold')");
+  assert.match(run('activeItem().draft.body'),/^\*\*Hi\*\*/);
+  assert.match(run("$('email-preview').innerHTML"), /<strong>Hi<\/strong>/);
+  await run("formatEmailSelection('bold')");
+  assert.match(run('activeItem().draft.body'),/^Hi/);
+  run("$('email-body').selectionStart=$('email-body').value.indexOf('\\n\\n')+2; $('email-body').selectionEnd=$('email-body').selectionStart+4");
+  await run("formatEmailSelection('bullets')");
+  assert.match(run('activeItem().draft.body'),/\n- /);
+  assert.match(run("$('email-preview').innerHTML"),/<ul><li>/);
   await run(`changeWriting('tone','Warm')`);
   assert.match(html(), /Only .*recipient|Only [^<]+/);
   assert.match(html(), /All campaign drafts/);
