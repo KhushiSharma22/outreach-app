@@ -1,7 +1,7 @@
 // Campaign-specific supply. Customers import their own contacts; operators prepare research lists.
 import {id,now} from './db.mjs';
-import {invalid,conflict,parseCsv,EMAIL_RE,localView,zonedToUtc} from './lib.mjs';
-import {loadCampaign} from './campaigns.mjs';
+import {invalid,conflict,parseCsv,EMAIL_RE,localView,zonedToUtc,json} from './lib.mjs';
+import {loadCampaign,scheduleErrors} from './campaigns.mjs';
 import {importCsv,checkCandidate} from './sourcing.mjs';
 import {planWeeklySlots} from './weekly-plan.mjs';
 import {addDays,weekdayOf} from './lib.mjs';
@@ -89,12 +89,44 @@ export async function seedResearch(ctx,campaignId,{csv,filename='Research list',
  await ctx.db.audit(ctx.ws,c.id,'research.prepared','Research availability updated',{ready,rejected:rejected.length},ctx.user?.id);
  });return {import:imported,ready,rejected};
 }
-export async function sourceStatus(ctx,campaignId){
- const c=await loadCampaign(ctx,campaignId),day=now().slice(0,10);
- const allocation=await ctx.db.get('SELECT * FROM research_days WHERE workspace_id=? AND day=?',[ctx.ws,day]);
+// An estimate only: actual availability can change as other work is approved or sent.
+export async function nextResearchWindow(ctx,c,at=Date.now()){
+ const s=c.config.schedule;if(scheduleErrors(s).length)return null;
+ const ist=localView(at,'Asia/Kolkata').date,offset=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].indexOf(weekdayOf(ist));
+ const monday=addDays(ist,-offset),today=localView(at,s.timezone).date;
+ const reservations=await ctx.db.all(`SELECT rd.*,c.status campaign_status,v.data campaign_config FROM research_days rd LEFT JOIN campaigns c ON c.id=rd.campaign_id LEFT JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE rd.workspace_id=? AND rd.day>=? AND rd.day<=?`,[ctx.ws,monday,addDays(monday,13)]);
+ if(reservations.some(r=>r.campaign_status==='deleted')){
+  const used=await ctx.db.all("SELECT campaign_id,updated_at FROM send_tasks WHERE workspace_id=? AND status IN ('sending','sent','unknown') AND updated_at>=? AND updated_at<?",[ctx.ws,addDays(monday,-1)+'T00:00:00.000Z',addDays(monday,15)+'T00:00:00.000Z']);
+  for(let i=reservations.length-1;i>=0;i--){const r=reservations[i];if(r.campaign_status==='deleted'&&r.campaign_config){const tz=json(r.campaign_config).schedule.timezone;if(!used.some(t=>t.campaign_id===r.campaign_id&&localView(Date.parse(t.updated_at),tz).date===r.day))reservations.splice(i,1);}}
+ }
+ const reset=await sendCapReset(ctx,at);
+ for(const week of [monday,addDays(monday,7)]){
+  const existing=reservations.filter(x=>x.day>=week&&x.day<=addDays(week,6));
+  const days=new Set(existing.map(x=>x.day));
+  for(const slot of planWeeklySlots({monday:week,count:1,target:c.config.target,schedule:s,notBefore:today}).days){
+   const row=existing.find(x=>x.day===slot.date);
+   if((!days.has(slot.date)&&days.size>=5)||(row&&row.campaign_id!==c.id)||Number(row?.allocated||0)>=Math.min(c.config.target,30))continue;
+   const start=slotStart(slot,at,reset,s.timezone);if(start)return {date:slot.date,weekday:slot.weekday,scheduled_at:slot.due_at,earliest_at:start,timezone:s.timezone};
+  }
+ }
+ return null;
+}
+async function sendCapReset(ctx,at){
+ const utcDate=new Date(at).toISOString().slice(0,10);
+ const n=await ctx.db.get("SELECT count(*) n FROM send_tasks WHERE workspace_id=? AND status IN ('sending','sent','unknown') AND updated_at>=?",[ctx.ws,utcDate]);
+ return Number(n.n)>=30?Date.parse(addDays(utcDate,1)+'T00:00:00Z'):0;
+}
+function slotStart(slot,at,reset,tz){
+ const start=Math.max(Date.parse(slot.due_at),at,reset);
+ return localView(start,tz).date===slot.date?new Date(start).toISOString():null;
+}
+export async function sourceStatus(ctx,campaignId,at=Date.now()){
+ const c=await loadCampaign(ctx,campaignId),day=new Date(at).toISOString().slice(0,10);
+ let allocation=await ctx.db.get('SELECT * FROM research_days WHERE workspace_id=? AND day=?',[ctx.ws,day]);
+ if(allocation&&await unusedDeletedDay(ctx,day))allocation=null;
  const list=await candidates(ctx,c,'research',day),assessments=await assessCandidates(ctx,c,list);let ready=0;
  for(const cand of list)if(assessments.get(cand.id).decision==='qualified')ready++;
- return {research_ready:ready,uploaded_ready:(await candidates(ctx,c,'upload',day)).length,daily_remaining:Math.max(0,Math.min(30,c.config.target)-(allocation?.allocated||0)),other_campaign_today:!!allocation&&allocation.campaign_id!==c.id};
+ return {research_ready:ready,uploaded_ready:(await candidates(ctx,c,'upload',day)).length,daily_remaining:Math.max(0,Math.min(30,c.config.target)-(allocation?.allocated||0)),other_campaign_today:!!allocation&&allocation.campaign_id!==c.id,next_window:await nextResearchWindow(ctx,c,at)};
 }
 export async function startCampaignDiscovery(ctx,c,{trigger='manual',occurrenceDate=null}={}){
  if(c.status==='stopped')throw conflict('campaign_stopped','This campaign is stopped.');
@@ -105,6 +137,7 @@ export async function startCampaignDiscovery(ctx,c,{trigger='manual',occurrenceD
  const running=await ctx.db.get("SELECT id FROM discovery_runs WHERE campaign_id=? AND status IN ('queued','running')",[c.id]);
  if(running){if(occurrenceDate)await ctx.db.run('UPDATE discovery_runs SET occurrence_date=coalesce(occurrence_date,?) WHERE id=?',[occurrenceDate,running.id]);runId=running.id;return;}
  const day=now().slice(0,10),research=c.config.source==='research';
+ if(research)await releaseDeletedDay(ctx,day);
  const days=research?await ctx.db.all('SELECT * FROM research_days WHERE workspace_id=? ORDER BY day',[ctx.ws]):[];
  const today=days.find(d=>d.day===day);
  if(today&&today.campaign_id!==c.id)throw conflict('research_campaign_limit','Research Leads is already in use by another campaign today. Continue in that campaign or try tomorrow (UTC).');
@@ -142,16 +175,19 @@ export async function startWeeklyDiscovery(ctx, campaignId, at = Date.now()) {
   const eligible=all.filter(x=>assessments.get(x.id).decision==='qualified').slice(0,150);
   if(!eligible.length)throw conflict('no_new_contacts','No new matching research contacts are available.');
   const localToday=localView(at,c.config.schedule.timezone).date;
+  const capReset=await sendCapReset(ctx,at);
   let cursor=0, assignedWeek=null, firstDate=null;
   const runId=id(),batch=Number((await ctx.db.get('SELECT max(batch) b FROM discovery_runs WHERE campaign_id=?',[c.id])).b||0)+1,createdAt=now();
   await ctx.db.insert('discovery_runs',{id:runId,campaign_id:c.id,batch,config_version:c.config_version,trigger:'weekly',occurrence_date:null,status:'queued',progress:'{}',created_at:createdAt});
   // Use this week if it has room, otherwise reserve the next week. Never allocate both weeks in one request.
   for(const week of [monday,addDays(monday,7)]){
    const plan=planWeeklySlots({monday:week,count:eligible.length,target:c.config.target,schedule:c.config.schedule,notBefore:localToday});
-   await releaseDeletedDay(ctx,localToday);
+   const oldDays=await ctx.db.all('SELECT day FROM research_days WHERE workspace_id=? AND day>=? AND day<=?',[ctx.ws,week,addDays(week,6)]);
+   for(const {day} of oldDays)await releaseDeletedDay(ctx,day);
    const already=await ctx.db.all('SELECT day FROM research_days WHERE workspace_id=? AND day>=? AND day<=?',[ctx.ws,week,addDays(week,6)]);
    const reservedDays=new Set(already.map(row=>row.day));
    for(const day of plan.days){
+    if(!slotStart(day,at,capReset,c.config.schedule.timezone))continue;
     if(!reservedDays.has(day.date) && reservedDays.size>=5)continue;
     const existing=await ctx.db.get('SELECT * FROM research_days WHERE workspace_id=? AND day=?',[ctx.ws,day.date]);
     if(existing&&existing.campaign_id!==c.id)continue;
@@ -173,12 +209,15 @@ export async function startWeeklyDiscovery(ctx, campaignId, at = Date.now()) {
 }
 
 // Remove only a deleted campaign's unused day reservation; sent/uncertain mail keeps the day locked.
-async function releaseDeletedDay(ctx,day){
+async function unusedDeletedDay(ctx,day){
  const row=await ctx.db.get(`SELECT rd.campaign_id,v.data FROM research_days rd JOIN campaigns c ON c.id=rd.campaign_id JOIN campaign_config_versions v ON v.campaign_id=c.id AND v.version=c.config_version WHERE rd.workspace_id=? AND rd.day=? AND c.status='deleted'`,[ctx.ws,day]);
- if(!row)return;
+ if(!row)return false;
  const tz=JSON.parse(row.data).schedule.timezone,start=zonedToUtc(day,'00:00',tz),end=zonedToUtc(addDays(day,1),'00:00',tz);
  const used=await ctx.db.get("SELECT 1 FROM send_tasks WHERE workspace_id=? AND campaign_id=? AND status IN ('sending','sent','unknown') AND updated_at>=? AND updated_at<? LIMIT 1",[ctx.ws,row.campaign_id,start,end]);
- if(!used)await ctx.db.run('DELETE FROM research_days WHERE workspace_id=? AND day=? AND campaign_id=?',[ctx.ws,day,row.campaign_id]);
+ return !used;
+}
+async function releaseDeletedDay(ctx,day){
+ if(await unusedDeletedDay(ctx,day))await ctx.db.run('DELETE FROM research_days WHERE workspace_id=? AND day=?',[ctx.ws,day]);
 }
 export async function moveUpcomingToToday(ctx,campaignId,at=Date.now()){
  const c=await loadCampaign(ctx,campaignId),local=localView(at,c.config.schedule.timezone),day=local.date;

@@ -17,12 +17,13 @@ test('opt-outs cannot be removed and remain idempotent',async()=>{
 import {createCampaign} from '../server/campaigns.mjs';
 import {startDiscovery,executeDiscovery,importCsv} from '../server/sourcing.mjs';
 import {sampleCsv} from '../server/sample.mjs';
+import {addLegacyCampaign} from './helpers.mjs';
 test('pilot allocation is shared across campaigns and exposes at most 30 candidates',async()=>{
  process.env.AI_PROVIDER='offline'; const db=await openDb({file:':memory:'});
  try {const {workspace,user}=await seedWorkspace(db);const ctx={db,ws:workspace.id,user,jobs:{enqueue:async()=>{}}};
  await importCsv(ctx,{csv:sampleCsv()});
  const a=await createCampaign(ctx,{source:'import',brief:{filters:{industries:['B2B SaaS']}}});
- const b=await createCampaign(ctx,{source:'import',brief:{filters:{industries:['B2B SaaS']}}});
+ const b=await addLegacyCampaign(ctx,{source:'import',brief:{filters:{industries:['B2B SaaS']}}});
  const run=await startDiscovery(ctx,a.id);await assert.rejects(startDiscovery(ctx,b.id),/30 contact checks/);
  await executeDiscovery(ctx,run.id);
  assert.ok(Number((await db.get('SELECT count(*) n FROM campaign_leads WHERE campaign_id=?',[a.id])).n)<=30);
@@ -34,7 +35,7 @@ test('small batches leave daily capacity for later imports and other campaigns',
  try{
  const {workspace,user}=await seedWorkspace(db);const ctx={db,ws:workspace.id,user,jobs:{enqueue:async()=>{}}};
  const a=await createCampaign(ctx,{source:'import',brief:{filters:{roles:['Founder']},signals:[]}});
- const b=await createCampaign(ctx,{source:'import',brief:{filters:{roles:['Founder']},signals:[]}});
+ const b=await addLegacyCampaign(ctx,{source:'import',brief:{filters:{roles:['Founder']},signals:[]}});
  const csv=(start,n)=>'first_name,email,role,company,employees,location\n'+Array.from({length:n},(_,i)=>`Person${start+i},person${start+i}@example.com,Founder,Company${start+i},5,India`).join('\n');
  await assert.rejects(startDiscovery(ctx,a.id),e=>e.code==='no_new_contacts');
  assert.equal(Number((await db.get('SELECT count(*) n FROM pilot_allocations')).n),0);

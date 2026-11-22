@@ -55,7 +55,7 @@ export function defaultConfig(context) {
   return {
     offer: context.offering,
     filters: { roles: [], industries: [], locations: [], sizes: [], seniority: [], exclude: ['Existing customers', 'Competitors', 'Active opportunities'] },
-    notes: '', source: 'research', sourceRef: '', signals: ['Hiring', 'Funding'], freshness: 30,
+    notes: '', source: 'research', sourceRef: '', signals: [], freshness: 30,
     min: 25, target: 30, quality: 80, requireVerifiedEmail: true,
     writing: { tone: context.tone, length: 'Balanced', angle: 'Signal-led', cta: 'Start a conversation' },
     schedule: { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], time: '09:00', timezone: 'Asia/Kolkata' },
@@ -146,6 +146,10 @@ export async function createCampaign(ctx, { name, prompt = '', brief, source, pr
   if (brief) config = normalizeConfig(config, { filters: brief.filters, signals: Array.isArray(brief.signals) ? brief.signals : config.signals, notes: brief.notes });
   const t = now(), c = { id: id(), workspace_id: ctx.ws, name: String(name || brief?.name || 'Untitled campaign').trim().slice(0, 120) || 'Untitled campaign', prompt: String(prompt).slice(0, 4000), status: 'draft', step: 0, context_version_id: context.id, config_version: 1, revision: 1, launched_at: null, created_at: t, updated_at: t };
   await ctx.db.tx(async () => {
+    // Serialize concurrent create/delete operations for this workspace.
+    await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
+    const existing=await ctx.db.get("SELECT id,name FROM campaigns WHERE workspace_id=? AND status<>'deleted' ORDER BY created_at LIMIT 1",[ctx.ws]);
+    if(existing)throw conflict('campaign_limit',`Delete the existing campaign “${existing.name}” before creating another.`,{campaign_id:existing.id});
     await ctx.db.insert('campaigns', c);
     await ctx.db.insert('campaign_config_versions', { id: id(), campaign_id: c.id, version: 1, data: JSON.stringify(config), created_by: ctx.user?.id, created_at: t });
     await ctx.db.audit(ctx.ws, c.id, 'campaign.created', prompt ? 'Campaign created from assistant brief' : 'Campaign created', {}, ctx.user?.id);
@@ -187,6 +191,14 @@ export async function updateCampaign(ctx, campaignId, body) {
         for(const task of tasks){const due=zonedToUtc(task.slot_date,scheduleTime(next.schedule,weekdayOf(task.slot_date)),next.schedule.timezone);await ctx.db.run('UPDATE send_tasks SET due_at=?,updated_at=? WHERE id=?',[new Date(Math.max(Date.parse(due),Date.now())).toISOString(),t,task.id]);}
       }
       if (JSON.stringify(next) !== JSON.stringify(c.config)) {
+        if(JSON.stringify(next.writing)!==JSON.stringify(c.config.writing)){
+          const affected=await ctx.db.all(`SELECT d.id,d.lead_id FROM drafts d WHERE d.campaign_id=? AND NOT EXISTS (SELECT 1 FROM send_tasks st WHERE st.lead_id=d.lead_id AND st.kind='initial' AND st.status IN ('sent','sending','unknown'))`,[c.id]);
+          for(const d of affected){
+            await ctx.db.run(`INSERT INTO draft_rewrite_required(draft_id,reason) VALUES(?,?) ON CONFLICT(draft_id) DO UPDATE SET reason=excluded.reason`,[d.id,'Campaign writing preferences changed']);
+            await ctx.db.run("UPDATE approvals SET invalidated_at=?,invalidation_reason=? WHERE draft_id=? AND invalidated_at IS NULL",[t,'Campaign writing preferences changed',d.id]);
+            await ctx.db.run("UPDATE send_tasks SET status='canceled',status_reason=?,updated_at=? WHERE lead_id=? AND status IN ('pending','held')",['Campaign writing preferences changed; review a new draft',t,d.lead_id]);
+          }
+        }
         const v = c.config_version + 1;
         await ctx.db.insert('campaign_config_versions', { id: id(), campaign_id: c.id, version: v, data: JSON.stringify(next), created_by: ctx.user?.id, created_at: t });
         await ctx.db.run('UPDATE campaigns SET config_version=? WHERE id=?', [v, c.id]);

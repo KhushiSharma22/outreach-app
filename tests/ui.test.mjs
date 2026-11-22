@@ -18,7 +18,7 @@ before(async () => {
   await new Promise(r => app.server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${app.server.address().port}`;
   els = {};
-  const el = id => (els[id] ??= { id, innerHTML: '', textContent: '', value: '', checked: true, style: {}, className: '', files: [], focus() {}, setSelectionRange() {} });
+  const el = id => (els[id] ??= { id, innerHTML: '', textContent: '', value: '', checked: true, style: {}, className: '', files: [], selectionStart:0, selectionEnd:0, focus() {}, setSelectionRange() {}, setRangeText(text,start,end){this.value=this.value.slice(0,start)+text+this.value.slice(end);this.selectionStart=start;this.selectionEnd=start+text.length;} });
   const doFetch = (url, opts) => fetch(url.startsWith('/') ? base + url : url, opts);
   ctx = vm.createContext({ OUTBOUND_BASE: base, OUTBOUND_TOKEN: app.devToken, crypto: globalThis.crypto, scrollTo() {}, addEventListener() {}, fetch: doFetch,
     document: { getElementById: el, querySelector: () => el('q'), querySelectorAll: () => [], addEventListener() {} }, navigator: {}, console, setTimeout, clearTimeout, Date, URLSearchParams, encodeURIComponent, location: {} });
@@ -50,6 +50,8 @@ test('every screen renders from the API, and the full manual-send journey works 
   await run('createFromBrief()');
   await until(() => run('S.c') && run('S.view') === 'builder');
   assert.match(html(), /Your original assistant brief/);
+  assert.match(run('campaignsView()'),/One campaign is allowed per workspace/);
+  assert.match(run('campaignsView()'),/onclick="newCampaign\(\)" disabled/);
   run(`toggleAudienceFilter('sizes','11–50')`); run(`toggleAudienceFilter('sizes','51–200')`);
   await run('flushSave()');
   assert.deepEqual([...run('S.c.config.filters.sizes')], ['11–50', '51–200']);
@@ -68,6 +70,24 @@ test('every screen renders from the API, and the full manual-send journey works 
   await settle(); await until(() => run('S.drafts && S.drafts.items.every(x=>x.draft)'));
   run('render()');
   assert.match(html(), /Emails that sound like you/);
+  assert.match(html(), /Edit with AI/);
+  assert.match(html(), /Attachments/);
+  assert.match(html(), /Bold selected text/);
+  run("$('email-subject').value=activeItem().draft.subject; $('email-body').value=activeItem().draft.body");
+  run("$('email-body').selectionStart=0; $('email-body').selectionEnd=2");
+  await run("formatEmailSelection('bold')");
+  assert.match(run('activeItem().draft.body'),/^\*\*Hi\*\*/);
+  assert.match(run("$('email-preview').innerHTML"), /<strong>Hi<\/strong>/);
+  await run("formatEmailSelection('bold')");
+  assert.match(run('activeItem().draft.body'),/^Hi/);
+  run("$('email-body').selectionStart=$('email-body').value.indexOf('\\n\\n')+2; $('email-body').selectionEnd=$('email-body').selectionStart+4");
+  await run("formatEmailSelection('bullets')");
+  assert.match(run('activeItem().draft.body'),/\n- /);
+  assert.match(run("$('email-preview').innerHTML"),/<ul><li>/);
+  await run(`changeWriting('tone','Warm')`);
+  assert.match(html(), /Only .*recipient|Only [^<]+/);
+  assert.match(html(), /All campaign drafts/);
+  run('closeOverlay();render()');
   await run('openBulk()');
   await run('approveAll()');
   assert.equal(run('S.drafts.approved'), selectedCount);
@@ -81,8 +101,19 @@ test('every screen renders from the API, and the full manual-send journey works 
   assert.match(html(), /CAMPAIGN INSIGHTS/);
   assert.equal(run('S.c.status'), 'active');
 
+  await run(`navigate('home')`);
+  await until(() => run('S.homeDaily !== null'));
+  assert.match(html(), /Today’s outreach/);
+  assert.match(html(), /Awaiting review/);
+  assert.match(html(), /Sent today/);
+  assert.doesNotMatch(html(), /Your next campaign starts with a conversation/);
+
   await run(`navigate('outbox')`);
   assert.match(html(), /I sent this/);
+  const preview = run(`taskCard({id:'preview',recipient:'Alex',company:'Test',to_email:'alex@example.test',kind:'initial',campaign_name:'Test',status:'pending',due:true,delivery:'manual',subject:'Hello',body:'**Hello** <script>alert(1)</script>'})`);
+  assert.match(preview, /<strong>Hello<\/strong>/);
+  assert.match(preview, /&lt;script&gt;/);
+  assert.doesNotMatch(preview, /<script>/);
   const taskId = run('S.tasks.items[0].id');
   await run(`confirmSent('${taskId}')`);
   assert.equal(run('S.tasks.counts.sent'), 1);
@@ -101,9 +132,26 @@ test('every screen renders from the API, and the full manual-send journey works 
 });
 
 test('campaign lead screen displays admin-managed leads without customer import controls',async()=>{
+ await run(`Api.del('/api/campaigns/'+S.cid)`);await run('refreshSummary()');
  const c=await run(`Api.post('/api/campaigns',{name:'Admin leads',brief:{filters:{roles:['Founder']},signals:[]}})`);
  await run(`openCampaign('${c.id}','builder')`);
  await run('continueFlow()');
  assert.match(html(),/Your admin prepares leads for this campaign/);
+ run("S.sources={research_ready:2,daily_remaining:0,other_campaign_today:true,next_window:{date:'2026-11-23',earliest_at:'2026-11-23T06:00:00.000Z',timezone:'Asia/Kolkata'}};render()");
+ assert.match(html(),/Earliest available window for new leads:.*23 Nov 2026.*11:30 am.*Asia\/Kolkata/i);
  assert.doesNotMatch(html(),/Import your own contacts|Upload your contacts/);
+});
+
+test('failed campaign metrics show a retry action instead of endless loading',async()=>{
+ await run(`Api.del('/api/campaigns/'+S.cid)`);await run('refreshSummary()');
+ const c=await run(`Api.post('/api/campaigns',{name:'Retry insights',brief:{filters:{roles:['Founder']},signals:[]}})`);
+ run(`Api.originalGetForTest=Api.get; Api.get=async (...args)=>{if(args[0].endsWith('/metrics'))throw new Error('Test metrics failure'); return Api.originalGetForTest(...args);}`);
+ try {
+  await run(`openCampaign('${c.id}','tracking')`);
+  assert.match(html(),/Couldn’t load campaign insights/);
+  assert.match(html(),/Try again/);
+  run('Api.get=Api.originalGetForTest');
+  await run(`insightTab('overview')`);
+  assert.match(html(),/Today’s outreach/);
+ } finally { run('Api.get=Api.originalGetForTest'); }
 });

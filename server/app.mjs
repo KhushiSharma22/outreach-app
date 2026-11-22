@@ -164,6 +164,7 @@ export async function createApp({ databaseUrl = process.env.DATABASE_URL || null
   route('GET', '/api/drafts/:id', async (ctx, p) => await drafts.getDraft(ctx, p.id));
   route('PATCH', '/api/drafts/:id', async (ctx, p, body) => await drafts.editDraft(ctx, p.id, body));
   route('POST', '/api/drafts/:id/rewrites', async (ctx, p, body) => await drafts.rewriteDraft(ctx, p.id, body));
+  route('POST', '/api/campaigns/:id/attachments', async (ctx,p,body) => await drafts.setAttachment(ctx,p.id,body));
   route('POST', '/api/approvals', async (ctx, p, body) => { const results = await drafts.approveDrafts(ctx, body, delivery.onDraftApproved(ctx)); return { results, approved: results.filter(r => r.status === 'approved').length, failed: results.filter(r => r.status !== 'approved').length }; }, { idem: true });
   route('POST', '/api/campaigns/:id/launch', async (ctx, p, body) => { const r = await delivery.launch(ctx, p.id, body); return { ...await campaignView(ctx, r.campaign), created_tasks: r.created }; }, { idem: true });
   for (const a of ['pause', 'resume', 'stop']) route('POST', `/api/campaigns/:id/${a}`, async (ctx, p) => await campaignView(ctx, await delivery.setCampaignState(ctx, p.id, a)));

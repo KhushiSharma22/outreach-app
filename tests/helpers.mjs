@@ -2,6 +2,14 @@
 // per test file (created and dropped here) so files can run in parallel.
 import { randomBytes } from 'node:crypto';
 
+// Model workspaces that already had multiple campaigns before the single-campaign policy.
+export async function addLegacyCampaign(ctx,body){
+  const rows=await ctx.db.all("SELECT id,status FROM campaigns WHERE workspace_id=? AND status<>'deleted'",[ctx.ws]);
+  for(const row of rows)await ctx.db.run("UPDATE campaigns SET status='deleted' WHERE id=?",[row.id]);
+  try { const {createCampaign}=await import('../server/campaigns.mjs');return await createCampaign(ctx,body); }
+  finally { for(const row of rows)await ctx.db.run('UPDATE campaigns SET status=? WHERE id=?',[row.status,row.id]); }
+}
+
 export async function testDatabase() {
   const admin = process.env.TEST_DATABASE_URL;
   if (!admin) return { databaseUrl: null, dbFile: ':memory:', drop: async () => {} };

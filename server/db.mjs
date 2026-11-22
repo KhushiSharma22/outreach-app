@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS campaign_leads(id TEXT PRIMARY KEY, campaign_id TEXT 
 
 CREATE TABLE IF NOT EXISTS drafts(id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL REFERENCES campaigns(id), lead_id TEXT NOT NULL REFERENCES campaign_leads(id), current_revision_id TEXT, created_at TEXT NOT NULL, UNIQUE(lead_id));
 CREATE TABLE IF NOT EXISTS draft_revisions(id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES drafts(id), rev INTEGER NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, hash TEXT NOT NULL, origin TEXT NOT NULL, generator TEXT NOT NULL, evidence_ids TEXT NOT NULL, review_note TEXT, context_version_id TEXT NOT NULL, config_version INTEGER NOT NULL, created_by TEXT, created_at TEXT NOT NULL, UNIQUE(draft_id, rev));
+CREATE TABLE IF NOT EXISTS attachments(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), filename TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, content_base64 TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS draft_revision_attachments(revision_id TEXT NOT NULL REFERENCES draft_revisions(id), attachment_id TEXT NOT NULL REFERENCES attachments(id), PRIMARY KEY(revision_id, attachment_id));
+CREATE TABLE IF NOT EXISTS campaign_attachment_defaults(campaign_id TEXT PRIMARY KEY REFERENCES campaigns(id), attachment_id TEXT NOT NULL REFERENCES attachments(id));
+CREATE TABLE IF NOT EXISTS draft_rewrite_required(draft_id TEXT PRIMARY KEY REFERENCES drafts(id), reason TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES drafts(id), revision_id TEXT NOT NULL REFERENCES draft_revisions(id), hash TEXT NOT NULL, actor TEXT NOT NULL, via TEXT NOT NULL, created_at TEXT NOT NULL, invalidated_at TEXT, invalidation_reason TEXT);
 
 CREATE TABLE IF NOT EXISTS sequences(id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL UNIQUE REFERENCES campaigns(id), status TEXT NOT NULL DEFAULT 'draft', steps TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, current_version_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -178,19 +182,28 @@ function toPg(sql) {
   pgCache.set(sql, hit);
   return hit;
 }
+export function postgresConnectionOptions(url, env = process.env) {
+  const parsed = new URL(url);
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+  const disableTls = env.DATABASE_SSL === 'false';
+  if (!local && disableTls && (env.NODE_ENV === 'production' || env.VERCEL)) throw new Error('DATABASE_SSL=false is not allowed for a remote production database.');
+  const ca = env.DATABASE_CA_CERT_PEM?.trim() || (env.DATABASE_CA_CERT ? readFileSync(env.DATABASE_CA_CERT, 'utf8') : null);
+  // pg replaces the explicit ssl object when sslmode occurs in the connection string.
+  // Keep the verified TLS options authoritative, and preserve unrelated query parameters.
+  if (parsed.searchParams.get('sslrootcert') === 'system') parsed.searchParams.delete('sslrootcert');
+  if (['sslcert', 'sslkey', 'sslrootcert'].some(key => parsed.searchParams.has(key))) throw new Error('Configure database CA certificates using DATABASE_CA_CERT_PEM or DATABASE_CA_CERT, not connection-string TLS parameters.');
+  parsed.searchParams.delete('sslmode');
+  const ssl = local || disableTls ? false : { rejectUnauthorized: true, ...(ca ? { ca: ca.replace(/\\n/g, '\n') } : {}) };
+  return { connectionString: parsed.toString(), ssl };
+}
 async function openPostgres(url) {
   const { default: pg } = await import('pg');
   pg.types.setTypeParser(20, v => Number(v));   // bigint (count) → number
   pg.types.setTypeParser(1700, v => Number(v)); // numeric (sum) → number
-  // Supabase requires TLS. Its CA certificate verifies the server: DATABASE_CA_CERT_PEM holds the
-  // certificate text (for hosts like Vercel), DATABASE_CA_CERT a path to the file.
-  const ca = process.env.DATABASE_CA_CERT_PEM?.trim() || (process.env.DATABASE_CA_CERT ? readFileSync(process.env.DATABASE_CA_CERT, 'utf8') : null);
-  const local = /@(localhost|127\.0\.0\.1)[:/]/.test(url);
-  const ssl = local || process.env.DATABASE_SSL === 'false' ? false : ca ? { ca: ca.replace(/\\n/g, '\n'), rejectUnauthorized: true } : { rejectUnauthorized: false };
-  if (ssl && !ca) console.warn('DATABASE_CA_CERT is not set: the database connection is encrypted but the server certificate is not verified.');
+  const connection = postgresConnectionOptions(url);
   // Serverless instances keep few connections and release idle ones quickly.
   const serverless = !!process.env.VERCEL;
-  const pool = new pg.Pool({ connectionString: url.replace(/[?&]sslmode=[^&]*/, ''), ssl, max: +(process.env.DATABASE_POOL_SIZE || (serverless ? 3 : 10)), idleTimeoutMillis: serverless ? 5000 : 30000, connectionTimeoutMillis: 10000 });
+  const pool = new pg.Pool({ ...connection, max: +(process.env.DATABASE_POOL_SIZE || (serverless ? 3 : 10)), idleTimeoutMillis: serverless ? 5000 : 30000, connectionTimeoutMillis: 10000 });
   pool.on('error', e => console.error(JSON.stringify({ t: now(), event: 'db_pool_error', error: e.message })));
   const als = new AsyncLocalStorage();
   const live = () => { const st = als.getStore(); return st && !st.done ? st : null; };

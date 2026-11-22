@@ -19,6 +19,15 @@ const SIGNAL_WORDS = { Hiring: /\bhir(e|es|ing)\b|open roles?|job openings?|recr
 
 // ---------- Offline provider ----------
 const has = (text, re) => re.test(text);
+// Keep the fallback factual: emphasize a short portion of the supplied offer without
+// inventing claims or turning an entire paragraph into bold text.
+function formatOffer(value) {
+  const offer=String(value||'');
+  if(!offer || /\*\*|https?:\/\//i.test(offer)) return offer;
+  const match=offer.match(/\S+(?:[ \t]+\S+){1,4}/);
+  if(!match || match[0].length>70 || /[.!?]$/.test(match[0]) || match[0]===offer.trim()) return offer;
+  return offer.slice(0,match.index)+'**'+match[0]+'**'+offer.slice(match.index+match[0].length);
+}
 const offline = {
   name: 'offline', model: null,
   async interpretBrief({ prompt }) {
@@ -47,9 +56,10 @@ const offline = {
     const fact = w.angle === 'Signal-led' ? evidence[0] : null;
     const opener = fact ? `I noticed that ${fact.fact.replace(/\.$/, '')}.` : `I came across ${lead.company} while looking at teams in ${lead.industry || 'your space'}.`;
     const ask = w.cta === 'Book a meeting' ? 'Would you be open to a 15-minute conversation next week?' : w.cta === 'Ask permission' ? 'Would it be useful if I sent a short overview?' : 'Is this something your team is thinking about?';
+    const offer=formatOffer(config.offer);
     const body = w.length === 'Concise'
-      ? `${greeting} ${first},\n\n${config.offer}\n\nWorth a quick conversation for ${lead.company}?\n\n${context.signature}`
-      : `${greeting} ${first},\n\n${opener}\n\n${config.offer}\n\n${ask}\n\n${context.signature}`;
+      ? `${greeting} ${first},\n\n${offer}\n\nWorth a quick conversation for ${lead.company}?\n\n${context.signature}`
+      : `${greeting} ${first},\n\n${opener}\n\n${offer}\n\n${ask}\n\n${context.signature}`;
     return { subject: `A thought for ${lead.company}`, body, evidence_ids: fact ? [fact.id] : [], review_note: fact || w.angle !== 'Signal-led' ? null : 'No usable signal evidence; a factual company-led opening was used.' };
   },
   async rewriteEmail({ context, config, lead, draft, style }) {
@@ -208,10 +218,13 @@ export function checkFtpDraft(draft, context, config) {
   if (/\b(every|each|all)\b[^.!?\n]{0,90}\b(training|tournament access|tournaments)\b/i.test(text)) errors.push('Training or tournament access must not be promised for every package.');
   return errors;
 }
+export function checkAttachmentReference(draft,attachments=[]) {
+  return !attachments.length && /\b(?:i(?:'ve| have)? attached|please (?:see|find) (?:the )?attached|(?:the|an|my) attachment|attached (?:is|you(?:'ll| will) find)|enclosed (?:is|you(?:'ll| will) find))\b/i.test(draft?.body||'') ? ['The email mentions an attachment, but no file is attached.'] : [];
+}
 export function checkDraft(draft, evidence, signature, allowedText = []) {
   const problems = [];
   if (!draft || typeof draft.subject !== 'string' || typeof draft.body !== 'string' || !Array.isArray(draft.evidence_ids)) return ['Invalid draft structure.'];
-  let claims = draft.body || '';
+  let claims = (draft.body || '').replace(/\*\*([^*\n]+)\*\*/g,'$1');
   for (const t of allowedText) if (t) claims = claims.split(t).join(' '); // the customer's own offering/proof may use these words
   if (!draft.subject?.trim() || draft.subject.length > 140) problems.push('Subject must be 1–140 characters.');
   if (!draft.body?.trim() || draft.body.length > 3000) problems.push('Body must be 1–3,000 characters.');

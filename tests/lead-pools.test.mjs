@@ -5,8 +5,9 @@ import {seedWorkspace} from '../server/app.mjs';
 import {createCampaign,updateCampaign} from '../server/campaigns.mjs';
 import {seedResearch,uploadForCampaign,previewUpload,sourceStatus} from '../server/lead-pools.mjs';
 import {startDiscovery,executeDiscovery} from '../server/sourcing.mjs';
+import {addLegacyCampaign} from './helpers.mjs';
 const csv=(n,offset=0,status='valid')=>'first_name,last_name,email,company,role,employees,location,email_status\n'+Array.from({length:n},(_,i)=>`Person${i+offset},Test,p${i+offset}@example.com,C${i+offset},Founder,5,India,${status}`).join('\n');
-async function setup(fn){process.env.AI_PROVIDER='offline';const db=await openDb({file:':memory:'});try{const {workspace,user}=await seedWorkspace(db);const ctx={db,ws:workspace.id,user,jobs:{enqueue:async()=>{}}};const make=async(source='research')=>{let c=await createCampaign(ctx,{source,brief:{filters:{roles:['Founder'],locations:['India'],sizes:['1–10']},signals:[]}});return updateCampaign(ctx,c.id,{revision:c.revision,config:{target:3}})};await fn(ctx,make);}finally{await db.close()}}
+async function setup(fn){process.env.AI_PROVIDER='offline';const db=await openDb({file:':memory:'});try{const {workspace,user}=await seedWorkspace(db);const ctx={db,ws:workspace.id,user,jobs:{enqueue:async()=>{}}};const make=async(source='research')=>{let c=await addLegacyCampaign(ctx,{source,brief:{filters:{roles:['Founder'],locations:['India'],sizes:['1–10']},signals:[]}});return updateCampaign(ctx,c.id,{revision:c.revision,config:{target:3}})};await fn(ctx,make);}finally{await db.close()}}
 test('research is prequalified, scoped, target-limited, and limited to one campaign each day',()=>setup(async(ctx,make)=>{
  const a=await make(),b=await make();
  assert.equal(a.config.source,'research');

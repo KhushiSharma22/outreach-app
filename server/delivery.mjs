@@ -4,10 +4,11 @@
 import { randomBytes } from 'node:crypto';
 import { transport, verifySaved } from './mailbox.mjs';
 import { id, now } from './db.mjs';
-import { conflict, invalid, notFound, EMAIL_RE, normEmail, localView, zonedToUtc, weekdayOf } from './lib.mjs';
+import { conflict, invalid, notFound, EMAIL_RE, normEmail, localView, zonedToUtc, weekdayOf, addDays } from './lib.mjs';
 import { loadCampaign, scheduleErrors, scheduleTime } from './campaigns.mjs';
 import { validApproval, cancelLeadTasks } from './drafts.mjs';
 import { enrollOnSend, stopEnrollments, advanceEnrollment, holdOverdue, planFollowups } from './sequences.mjs';
+import { formatEmail } from './email-format.mjs';
 
 // FTP records an operator-reviewed basis before sending to Canada. This is a gate,
 // not a legal determination; unknown geography is held for review.
@@ -142,6 +143,12 @@ export async function deleteCampaign(ctx,campaignId){
   await ctx.db.run("UPDATE enrollments SET status='stopped',stop_reason='Campaign deleted',updated_at=? WHERE campaign_id=? AND status='active'",[t,c.id]);
   await ctx.db.run("UPDATE sequences SET status='paused' WHERE campaign_id=? AND status='active'",[c.id]);
   await ctx.db.run("UPDATE jobs SET status='dead',last_error='Campaign deleted',finished_at=? WHERE workspace_id=? AND campaign_id=? AND status='queued'",[t,ctx.ws,c.id]);
+  // Free only days on which no send was accepted, in flight, or uncertain.
+  for(const {day} of await ctx.db.all('SELECT day FROM research_days WHERE workspace_id=? AND campaign_id=?',[ctx.ws,c.id])){
+    const start=zonedToUtc(day,'00:00',c.config.schedule.timezone),end=zonedToUtc(addDays(day,1),'00:00',c.config.schedule.timezone);
+    const used=await ctx.db.get("SELECT 1 FROM send_tasks WHERE workspace_id=? AND campaign_id=? AND status IN ('sending','sent','unknown') AND updated_at>=? AND updated_at<? LIMIT 1",[ctx.ws,c.id,start,end]);
+    if(!used)await ctx.db.run('DELETE FROM research_days WHERE workspace_id=? AND campaign_id=? AND day=?',[ctx.ws,c.id,day]);
+  }
   await ctx.db.audit(ctx.ws,c.id,'campaign.deleted','Campaign deleted and pending sends canceled; sent history retained',{},ctx.user?.id);
  });
  return {deleted:true};
@@ -334,7 +341,10 @@ export async function smtpSend(ctx, taskId, publicUrl, {no_reply_confirmed=false
   // Last check before handing the message to the provider.
   const current=await loadTask(ctx,t.id);
   if(blockedReason({...current,status:'pending'}) || (t.kind==='initial'&&!await validApproval(ctx,t.draft_revision_id))) throw new Error('Eligibility changed before dispatch');
-  await client.sendMail({from:row.sender,to:t.to_email,subject:t.subject,text:body,headers:{'List-Unsubscribe':`<${url}>`,'List-Unsubscribe-Post':'List-Unsubscribe=One-Click'},disableFileAccess:true,disableUrlAccess:true});
+  const files=t.kind==='initial' ? await ctx.db.all('SELECT a.filename,a.mime,a.content_base64 FROM draft_revision_attachments ra JOIN attachments a ON a.id=ra.attachment_id WHERE ra.revision_id=? AND a.workspace_id=?',[t.draft_revision_id,ctx.ws]) : [];
+  const attachments=files.map(f=>({filename:f.filename,content:Buffer.from(f.content_base64,'base64'),contentType:f.mime}));
+  const formatted=formatEmail(body,{unsubscribeUrl:url});
+  await client.sendMail({from:row.sender,to:t.to_email,subject:t.subject,text:formatted.text,html:formatted.html,attachments,headers:{'List-Unsubscribe':`<${url}>`,'List-Unsubscribe-Post':'List-Unsubscribe=One-Click'},disableFileAccess:true,disableUrlAccess:true});
  } catch (error) {
   const safeCodes=['EAUTH','ETIMEDOUT','ECONNECTION','ESOCKET','ECONNRESET','ECONNREFUSED','ENOTFOUND','EAI_AGAIN','ETLS'];
   const smtpCode=safeCodes.includes(error?.code)?error.code:null;

@@ -103,11 +103,10 @@ test('discovery qualifies with evidence, keeps batches, never re-adds the same p
   assert.equal(run1.qualified, 22);
   assert.equal(run1.selected, 22);
   assert.match(run1.shortfall_reason, /below the minimum/);
-  // The first batch used all 30 contact checks across campaigns.
-  const other1 = await readyCampaign('Second campaign');
-  const blocked = await api('POST', `/api/campaigns/${other1.id}/discovery-runs`);
+  // A second campaign cannot be created while the first exists.
+  const blocked = await api('POST', '/api/campaigns', {name:'Second campaign'});
   assert.equal(blocked.status, 409);
-  assert.equal(blocked.data.error.code, 'daily_limit');
+  assert.equal(blocked.data.error.code, 'campaign_limit');
   const leads = await ok('GET', `/api/campaigns/${c.id}/leads?decision=all&page_size=100`);
   const by = n => leads.items.find(l => l.name === n);
   assert.equal(by('Ira Banerjee').decision, 'review');          // no email
@@ -284,6 +283,7 @@ test('workspace isolation and request protections', async () => {
 });
 
 test('brief interpretation keeps the prompt and only proposes detected filters', async () => {
+  await freshWorkspace({csv:null});
   const b = await ok('POST', '/api/campaign-briefs/interpret', { prompt: 'Find heads of growth at SaaS companies hiring their first sales team in India.' });
   assert.deepEqual(b.filters.roles, ['Head of Growth']);
   assert.deepEqual(b.filters.locations, ['India']);

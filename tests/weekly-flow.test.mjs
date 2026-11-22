@@ -10,6 +10,32 @@ import {launch,deleteCampaign} from '../server/delivery.mjs';
 import {listCampaigns} from '../server/campaigns.mjs';
 import {runScheduler} from '../server/jobs.mjs';
 import {workspaceSummary} from '../server/reporting.mjs';
+import {addLegacyCampaign} from './helpers.mjs';
+
+test('new research fills an unreserved scheduled day after midnight, before send time',async()=>{
+ const db=await openDb({file:':memory:'}),old=Date.now;process.env.AI_PROVIDER='offline';
+ Date.now=()=>Date.parse('2026-11-21T22:00:00+05:30');
+ try{
+  const {workspace,user}=await seedWorkspace(db), queued=[];
+  const ctx={db,ws:workspace.id,user,publicUrl:'https://app.example.com',jobs:{enqueue:async(_ws,type,payload)=>{queued.push({type,payload});return {id:'job'};}}};
+  let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
+  c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{target:2,delivery:'smtp',schedule:{days:['Sat','Sun'],time:'14:00',timezone:'Asia/Kolkata'}}});
+  const headers='first_name,last_name,email,company,role,email_status,quality_score\n';
+  await seedResearch(ctx,c.id,{csv:headers+'Alex,Test,first@example.com,First,Founder,valid,95',available_on:'2026-11-21'});
+  const first=await startWeeklyDiscovery(ctx,c.id,Date.now());await executeDiscovery(ctx,first.run_id);await executeDraftRun(ctx,{campaign_id:c.id});
+  await db.run("UPDATE campaigns SET status='active' WHERE id=?",[c.id]);
+  Date.now=()=>Date.parse('2026-11-22T00:15:00+05:30');
+  await seedResearch(ctx,c.id,{csv:headers+'Alex,Test,second@example.com,Second,Founder,valid,95',available_on:'2026-11-22'});
+  await runScheduler(db,()=>ctx,Date.now(),async()=>{throw new Error('must not send');},{weeklyOnly:true});
+  const sunday=await db.get("SELECT run_id FROM weekly_slots WHERE campaign_id=? AND slot_date='2026-11-22'",[c.id]);
+  assert.ok(sunday,'Sunday assigned immediately after midnight');
+  await executeDiscovery(ctx,sunday.run_id);await executeDraftRun(ctx,{campaign_id:c.id});
+  assert.equal(Number((await db.get('SELECT count(*) n FROM drafts WHERE campaign_id=?',[c.id])).n),2);
+  await runScheduler(db,()=>ctx,Date.now(),async()=>{throw new Error('must not send');},{weeklyOnly:true});
+  assert.equal(Number((await db.get("SELECT count(*) n FROM weekly_slots WHERE campaign_id=? AND slot_date='2026-11-22'",[c.id])).n),1);
+  assert.equal(Number((await db.get('SELECT count(*) n FROM send_tasks WHERE campaign_id=?',[c.id])).n),0);
+ }finally{Date.now=old;await db.close();}
+});
 
 test('weekly research creates distinct day assignments, drafts, and approved-only send tasks',async()=>{
  const db=await openDb({file:':memory:'}); process.env.AI_PROVIDER='offline'; const originalNow=Date.now; Date.now=()=>Date.parse('2026-11-23T01:00:00+05:30');
@@ -123,7 +149,7 @@ test('deleted unused reservation can be released and future leads moved to selec
   const {workspace,user}=await seedWorkspace(db),ctx={db,ws:workspace.id,user,publicUrl:'https://app.example.com',jobs:{enqueue:async()=>({id:'job'})}};
   let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
   c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{target:3,schedule:{days:['Mon','Sat'],time:'22:10',timezone:'Asia/Kolkata'}}});
-  const previous=await createCampaign(ctx,{name:'Deleted campaign'});await db.run("UPDATE campaigns SET status='deleted' WHERE id=?",[previous.id]);
+  const previous=await addLegacyCampaign(ctx,{name:'Deleted campaign'});await db.run("UPDATE campaigns SET status='deleted' WHERE id=?",[previous.id]);
   await db.insert('research_days',{workspace_id:ctx.ws,day:'2026-11-21',campaign_id:previous.id,allocated:3});
   const csv='first_name,last_name,email,company,role,email_status,quality_score\nAlex,Test,movetoday@example.com,Company,Founder,valid,95';
   await seedResearch(ctx,c.id,{csv,available_on:'2026-11-21'});
