@@ -146,6 +146,10 @@ export async function createCampaign(ctx, { name, prompt = '', brief, source, pr
   if (brief) config = normalizeConfig(config, { filters: brief.filters, signals: Array.isArray(brief.signals) ? brief.signals : config.signals, notes: brief.notes });
   const t = now(), c = { id: id(), workspace_id: ctx.ws, name: String(name || brief?.name || 'Untitled campaign').trim().slice(0, 120) || 'Untitled campaign', prompt: String(prompt).slice(0, 4000), status: 'draft', step: 0, context_version_id: context.id, config_version: 1, revision: 1, launched_at: null, created_at: t, updated_at: t };
   await ctx.db.tx(async () => {
+    // Serialize concurrent create/delete operations for this workspace.
+    await ctx.db.run('UPDATE workspaces SET name=name WHERE id=?',[ctx.ws]);
+    const existing=await ctx.db.get("SELECT id,name FROM campaigns WHERE workspace_id=? AND status<>'deleted' ORDER BY created_at LIMIT 1",[ctx.ws]);
+    if(existing)throw conflict('campaign_limit',`Delete the existing campaign “${existing.name}” before creating another.`,{campaign_id:existing.id});
     await ctx.db.insert('campaigns', c);
     await ctx.db.insert('campaign_config_versions', { id: id(), campaign_id: c.id, version: 1, data: JSON.stringify(config), created_by: ctx.user?.id, created_at: t });
     await ctx.db.audit(ctx.ws, c.id, 'campaign.created', prompt ? 'Campaign created from assistant brief' : 'Campaign created', {}, ctx.user?.id);

@@ -1,6 +1,7 @@
 // Metrics from persisted records, activity history, and the contact directory.
 import { json, localView, addDays } from './lib.mjs';
 import { loadCampaign } from './campaigns.mjs';
+import { nextResearchWindow } from './lead-pools.mjs';
 
 const n = async (db, sql, p) => (await db.get(sql, p)).n;
 export async function campaignMetrics(ctx, campaignId) {
@@ -17,7 +18,7 @@ export async function campaignMetrics(ctx, campaignId) {
   const nextSlot = await db.get('SELECT min(slot_date) AS next_date FROM weekly_slots WHERE workspace_id=? AND campaign_id=? AND slot_date>?',[ctx.ws,id,today]);
   const sentSeries=byDay(await db.all('SELECT sent_at t FROM messages WHERE campaign_id=? AND sent_at>=?', [id,since]));
   return {
-    daily: {date:today,timezone:tz,planned:Number(todayWeekly.total||0),reserved:Number(slots.total||0),next_date:nextSlot.next_date||null,drafted:Number(todayWeekly.drafted||0),awaiting:Number(todayWeekly.awaiting||0),sent_today:sentSeries[6],sent_yesterday:sentSeries[5]},
+    daily: {date:today,timezone:tz,planned:Number(todayWeekly.total||0),reserved:Number(slots.total||0),next_date:nextSlot.next_date||null,next_window:c.config.source==='research'?await nextResearchWindow(ctx,c):null,drafted:Number(todayWeekly.drafted||0),awaiting:Number(todayWeekly.awaiting||0),sent_today:sentSeries[6],sent_yesterday:sentSeries[5]},
     definitions: { sent: 'SMTP acceptance or manual confirmation; inbox delivery is not verified.', reply_rate: 'Unique contacts with a recorded reply ÷ unique contacts emailed.', meetings: 'Recorded manually.' },
     candidates: await n(db, "SELECT coalesce(sum(candidates),0) n FROM discovery_runs WHERE campaign_id=? AND status='completed'", [id]),
     qualified: await n(db, "SELECT count(*) n FROM campaign_leads WHERE campaign_id=? AND decision='qualified'", [id]),

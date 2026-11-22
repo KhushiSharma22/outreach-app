@@ -10,6 +10,7 @@ import {launch,deleteCampaign} from '../server/delivery.mjs';
 import {listCampaigns} from '../server/campaigns.mjs';
 import {runScheduler} from '../server/jobs.mjs';
 import {workspaceSummary} from '../server/reporting.mjs';
+import {addLegacyCampaign} from './helpers.mjs';
 
 test('new research fills an unreserved scheduled day after midnight, before send time',async()=>{
  const db=await openDb({file:':memory:'}),old=Date.now;process.env.AI_PROVIDER='offline';
@@ -148,7 +149,7 @@ test('deleted unused reservation can be released and future leads moved to selec
   const {workspace,user}=await seedWorkspace(db),ctx={db,ws:workspace.id,user,publicUrl:'https://app.example.com',jobs:{enqueue:async()=>({id:'job'})}};
   let c=await createCampaign(ctx,{brief:{filters:{roles:['Founder']},signals:[]}});
   c=await updateCampaign(ctx,c.id,{revision:c.revision,config:{target:3,schedule:{days:['Mon','Sat'],time:'22:10',timezone:'Asia/Kolkata'}}});
-  const previous=await createCampaign(ctx,{name:'Deleted campaign'});await db.run("UPDATE campaigns SET status='deleted' WHERE id=?",[previous.id]);
+  const previous=await addLegacyCampaign(ctx,{name:'Deleted campaign'});await db.run("UPDATE campaigns SET status='deleted' WHERE id=?",[previous.id]);
   await db.insert('research_days',{workspace_id:ctx.ws,day:'2026-11-21',campaign_id:previous.id,allocated:3});
   const csv='first_name,last_name,email,company,role,email_status,quality_score\nAlex,Test,movetoday@example.com,Company,Founder,valid,95';
   await seedResearch(ctx,c.id,{csv,available_on:'2026-11-21'});

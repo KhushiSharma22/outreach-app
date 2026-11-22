@@ -71,6 +71,7 @@ test('discovery queued by a request finishes after the response via waitUntil', 
 });
 
 test('a request body already read by the platform is used', async () => {
+  for(const c of (await call('GET','/api/campaigns')).data.items)await call('DELETE',`/api/campaigns/${c.id}`);
   bufferBodies = true;
   try {
     const c = await call('POST', '/api/campaigns', { name: 'Buffered body' });
@@ -81,6 +82,7 @@ test('a request body already read by the platform is used', async () => {
 
 test('cron requires the secret, then runs the scheduler and requeues jobs cut off mid-run', async () => {
   await settle();
+  for(const c of (await call('GET','/api/campaigns')).data.items)await call('DELETE',`/api/campaigns/${c.id}`);
   assert.equal((await fetch(`${base}/api/cron`)).status, 401);
   assert.equal((await fetch(`${base}/api/cron`, { headers: { authorization: 'Bearer wrong' } })).status, 401);
   // A job left "running" by a function that hit its time limit.

@@ -50,6 +50,8 @@ test('every screen renders from the API, and the full manual-send journey works 
   await run('createFromBrief()');
   await until(() => run('S.c') && run('S.view') === 'builder');
   assert.match(html(), /Your original assistant brief/);
+  assert.match(run('campaignsView()'),/One campaign is allowed per workspace/);
+  assert.match(run('campaignsView()'),/onclick="newCampaign\(\)" disabled/);
   run(`toggleAudienceFilter('sizes','11–50')`); run(`toggleAudienceFilter('sizes','51–200')`);
   await run('flushSave()');
   assert.deepEqual([...run('S.c.config.filters.sizes')], ['11–50', '51–200']);
@@ -119,14 +121,18 @@ test('every screen renders from the API, and the full manual-send journey works 
 });
 
 test('campaign lead screen displays admin-managed leads without customer import controls',async()=>{
+ await run(`Api.del('/api/campaigns/'+S.cid)`);await run('refreshSummary()');
  const c=await run(`Api.post('/api/campaigns',{name:'Admin leads',brief:{filters:{roles:['Founder']},signals:[]}})`);
  await run(`openCampaign('${c.id}','builder')`);
  await run('continueFlow()');
  assert.match(html(),/Your admin prepares leads for this campaign/);
+ run("S.sources={research_ready:2,daily_remaining:0,other_campaign_today:true,next_window:{date:'2026-11-23',earliest_at:'2026-11-23T06:00:00.000Z',timezone:'Asia/Kolkata'}};render()");
+ assert.match(html(),/Earliest available window for new leads:.*23 Nov 2026.*11:30 am.*Asia\/Kolkata/i);
  assert.doesNotMatch(html(),/Import your own contacts|Upload your contacts/);
 });
 
 test('failed campaign metrics show a retry action instead of endless loading',async()=>{
+ await run(`Api.del('/api/campaigns/'+S.cid)`);await run('refreshSummary()');
  const c=await run(`Api.post('/api/campaigns',{name:'Retry insights',brief:{filters:{roles:['Founder']},signals:[]}})`);
  run(`Api.originalGetForTest=Api.get; Api.get=async (...args)=>{if(args[0].endsWith('/metrics'))throw new Error('Test metrics failure'); return Api.originalGetForTest(...args);}`);
  try {
