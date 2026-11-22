@@ -55,7 +55,7 @@ export function defaultConfig(context) {
   return {
     offer: context.offering,
     filters: { roles: [], industries: [], locations: [], sizes: [], seniority: [], exclude: ['Existing customers', 'Competitors', 'Active opportunities'] },
-    notes: '', source: 'research', sourceRef: '', signals: ['Hiring', 'Funding'], freshness: 30,
+    notes: '', source: 'research', sourceRef: '', signals: [], freshness: 30,
     min: 25, target: 30, quality: 80, requireVerifiedEmail: true,
     writing: { tone: context.tone, length: 'Balanced', angle: 'Signal-led', cta: 'Start a conversation' },
     schedule: { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], time: '09:00', timezone: 'Asia/Kolkata' },

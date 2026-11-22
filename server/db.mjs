@@ -182,19 +182,28 @@ function toPg(sql) {
   pgCache.set(sql, hit);
   return hit;
 }
+export function postgresConnectionOptions(url, env = process.env) {
+  const parsed = new URL(url);
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+  const disableTls = env.DATABASE_SSL === 'false';
+  if (!local && disableTls && (env.NODE_ENV === 'production' || env.VERCEL)) throw new Error('DATABASE_SSL=false is not allowed for a remote production database.');
+  const ca = env.DATABASE_CA_CERT_PEM?.trim() || (env.DATABASE_CA_CERT ? readFileSync(env.DATABASE_CA_CERT, 'utf8') : null);
+  // pg replaces the explicit ssl object when sslmode occurs in the connection string.
+  // Keep the verified TLS options authoritative, and preserve unrelated query parameters.
+  if (parsed.searchParams.get('sslrootcert') === 'system') parsed.searchParams.delete('sslrootcert');
+  if (['sslcert', 'sslkey', 'sslrootcert'].some(key => parsed.searchParams.has(key))) throw new Error('Configure database CA certificates using DATABASE_CA_CERT_PEM or DATABASE_CA_CERT, not connection-string TLS parameters.');
+  parsed.searchParams.delete('sslmode');
+  const ssl = local || disableTls ? false : { rejectUnauthorized: true, ...(ca ? { ca: ca.replace(/\\n/g, '\n') } : {}) };
+  return { connectionString: parsed.toString(), ssl };
+}
 async function openPostgres(url) {
   const { default: pg } = await import('pg');
   pg.types.setTypeParser(20, v => Number(v));   // bigint (count) → number
   pg.types.setTypeParser(1700, v => Number(v)); // numeric (sum) → number
-  // Supabase requires TLS. Its CA certificate verifies the server: DATABASE_CA_CERT_PEM holds the
-  // certificate text (for hosts like Vercel), DATABASE_CA_CERT a path to the file.
-  const ca = process.env.DATABASE_CA_CERT_PEM?.trim() || (process.env.DATABASE_CA_CERT ? readFileSync(process.env.DATABASE_CA_CERT, 'utf8') : null);
-  const local = /@(localhost|127\.0\.0\.1)[:/]/.test(url);
-  const ssl = local || process.env.DATABASE_SSL === 'false' ? false : ca ? { ca: ca.replace(/\\n/g, '\n'), rejectUnauthorized: true } : { rejectUnauthorized: false };
-  if (ssl && !ca) console.warn('DATABASE_CA_CERT is not set: the database connection is encrypted but the server certificate is not verified.');
+  const connection = postgresConnectionOptions(url);
   // Serverless instances keep few connections and release idle ones quickly.
   const serverless = !!process.env.VERCEL;
-  const pool = new pg.Pool({ connectionString: url.replace(/[?&]sslmode=[^&]*/, ''), ssl, max: +(process.env.DATABASE_POOL_SIZE || (serverless ? 3 : 10)), idleTimeoutMillis: serverless ? 5000 : 30000, connectionTimeoutMillis: 10000 });
+  const pool = new pg.Pool({ ...connection, max: +(process.env.DATABASE_POOL_SIZE || (serverless ? 3 : 10)), idleTimeoutMillis: serverless ? 5000 : 30000, connectionTimeoutMillis: 10000 });
   pool.on('error', e => console.error(JSON.stringify({ t: now(), event: 'db_pool_error', error: e.message })));
   const als = new AsyncLocalStorage();
   const live = () => { const st = als.getStore(); return st && !st.done ? st : null; };

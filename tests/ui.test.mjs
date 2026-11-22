@@ -101,6 +101,13 @@ test('every screen renders from the API, and the full manual-send journey works 
   assert.match(html(), /CAMPAIGN INSIGHTS/);
   assert.equal(run('S.c.status'), 'active');
 
+  await run(`navigate('home')`);
+  await until(() => run('S.homeDaily !== null'));
+  assert.match(html(), /Today’s outreach/);
+  assert.match(html(), /Awaiting review/);
+  assert.match(html(), /Sent today/);
+  assert.doesNotMatch(html(), /Your next campaign starts with a conversation/);
+
   await run(`navigate('outbox')`);
   assert.match(html(), /I sent this/);
   const taskId = run('S.tasks.items[0].id');

@@ -4,7 +4,7 @@ import { scrypt, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { id, now, hash } from './db.mjs';
 import { AppError, invalid, conflict, notFound, EMAIL_RE, normEmail, json } from './lib.mjs';
 import { newWorkspaceContext } from './campaigns.mjs';
-import { sendMail } from './mailer.mjs';
+import { sendMail, requireAccountMail } from './mailer.mjs';
 import { isApproved, requireApproved, isSuperAdmin, isOperator } from './admin.mjs';
 
 const DAY = 864e5;
@@ -147,6 +147,7 @@ export function createAuth({ db, publicUrl }) {
     config: () => ({ google: false, password: true, restricted: true }),
 
     async signup(out, req, body) {
+      requireAccountMail();
       const name = String(body.name || '').trim(), email = normEmail(body.email), company = String(body.company || '').trim();
       await limit(db, 'signup:' + clientIp(req), 20, 3600e3);
       await requireApproved(db, email);
@@ -194,6 +195,7 @@ export function createAuth({ db, publicUrl }) {
     },
 
     async resendVerification(req, body) {
+      requireAccountMail();
       const email = normEmail(body.email);
       await limit(db, 'resend:' + (email || clientIp(req)), 5, 3600e3);
       const user = email && await userByEmail(db, email);
@@ -210,6 +212,7 @@ export function createAuth({ db, publicUrl }) {
     },
 
     async forgotPassword(req, body) {
+      requireAccountMail();
       const email = normEmail(body.email);
       await limit(db, 'forgot:' + (email || clientIp(req)), 5, 3600e3);
       const user = email && await userByEmail(db, email);
