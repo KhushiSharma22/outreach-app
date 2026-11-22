@@ -110,6 +110,10 @@ test('every screen renders from the API, and the full manual-send journey works 
 
   await run(`navigate('outbox')`);
   assert.match(html(), /I sent this/);
+  const preview = run(`taskCard({id:'preview',recipient:'Alex',company:'Test',to_email:'alex@example.test',kind:'initial',campaign_name:'Test',status:'pending',due:true,delivery:'manual',subject:'Hello',body:'**Hello** <script>alert(1)</script>'})`);
+  assert.match(preview, /<strong>Hello<\/strong>/);
+  assert.match(preview, /&lt;script&gt;/);
+  assert.doesNotMatch(preview, /<script>/);
   const taskId = run('S.tasks.items[0].id');
   await run(`confirmSent('${taskId}')`);
   assert.equal(run('S.tasks.counts.sent'), 1);
